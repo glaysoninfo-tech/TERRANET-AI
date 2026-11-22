@@ -118,6 +118,14 @@ class Device:
     def allowed_operations(self) -> list[str]:
         return list(self.metadata.get("allowed_operations", []))
 
+    @property
+    def zone_id(self) -> str | None:
+        return self.metadata.get("zone_id")
+
+    @property
+    def asset_id(self) -> str | None:
+        return self.metadata.get("asset_id")
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

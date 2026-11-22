@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE properties SYSTEM 'http://java.sun.com/dtd/properties.dtd'>
+<!--
+  Configuração persistente do Traccar como Track Protocol Gateway (ARQ-002 §9.3, Ajuste #2).
+  NÃO usar modo memory-only sem reconciliação: o banco local persistente permite
+  reconciliar posições caso o TERRANET CORE fique indisponível durante o recebimento.
+-->
+<properties>
+  <entry key="database.driver">org.h2.Driver</entry>
+  <entry key="database.url">jdbc:h2:/opt/traccar/data/database</entry>
+  <entry key="database.user">sa</entry>
+  <entry key="database.password"></entry>
+
+  <entry key="forward.enable">true</entry>
+  <entry key="forward.json">true</entry>
+  <entry key="forward.url">http://terranet-core:8000/api/v1/ingest/track/webhook</entry>
+  <entry key="forward.header">X-Track-Webhook-Token: REPLACE_WITH_TERRANET_TRACK_WEBHOOK_TOKEN</entry>
+  <entry key="forward.retry.enable">true</entry>
+  <entry key="forward.retry.delay">1000</entry>
+  <entry key="forward.retry.count">30</entry>
+  <entry key="forward.retry.limit">5000</entry>
+</properties>

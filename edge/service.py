@@ -34,6 +34,7 @@ from edge.adapters.modbus.adapter import ModbusAdapter
 from edge.adapters.modbus.client import ModbusClient, create_modbus_client
 from edge.commands.validator import CommandValidator
 from edge.monitoring.agent import MonitoringAgent
+from edge.monitoring.time_health import TimeHealthMonitor
 from edge.mqtt.bus import InMemoryBus, MessageBus
 from edge.rules.engine import RuleStore, RulesEngine
 from edge.storage.repository import EdgeStore
@@ -63,6 +64,7 @@ class EdgeRuntime:
         self.rules = RulesEngine(self.store, self.devices, self.rule_store)
         self.bus = bus or InMemoryBus()
         self.downlink = ChirpStackDownlinkClient(self.bus, prefix=chirpstack_prefix)
+        self.time_health = TimeHealthMonitor()
         self.modbus_adapter = ModbusAdapter()
         self.modbus_clients: dict[str, ModbusClient] = {}
         self._last_modbus_poll: dict[str, float] = {}
@@ -74,6 +76,7 @@ class EdgeRuntime:
             modbus_clients=self.modbus_clients,
             modbus_adapter=self.modbus_adapter,
             downlink_client=self.downlink,
+            time_health=self.time_health,
         )
         self.monitoring = MonitoringAgent(
             edge_id=edge_id,
@@ -239,10 +242,42 @@ class EdgeRuntime:
                 emitted.append(ev)
         return emitted
 
-    @staticmethod
-    def clock_healthy(min_year: int = 2025) -> bool:
-        """Verifica se o RTC/NTP do EDGE não voltou para data de fábrica (1970/2020)."""
-        return utc_now().year >= min_year
+    def clock_healthy(self, min_year: int = 2025) -> bool:
+        """Verifica se o RTC/NTP do EDGE é confiável e sem saltos abruptos (ARQ-002 §10)."""
+        self.time_health.min_year = min_year
+        status = self.time_health.check()
+        self.monitoring.clock_healthy.set(1.0 if status.healthy else 0.0)
+        return status.healthy
+
+    def graceful_shutdown(self, reason: str = "low_battery") -> dict[str, Any]:
+        """Sequência de desligamento ordenado sob bateria baixa (ARQ-002 §11.1)."""
+        pending_before = self.store.count_pending()
+        self.store.audit(
+            actor=self.edge_id,
+            action="edge:graceful_shutdown",
+            target=self.edge_id,
+            outcome="initiated",
+            details={"reason": reason, "pending_outbox": pending_before},
+        )
+        if self.sync is not None and self.sync.wan_connected:
+            try:
+                self.sync_now()
+            except Exception:  # noqa: BLE001
+                log.warning("Falha ao drenar outbox durante desligamento ordenado")
+        pending_after = self.store.count_pending()
+        if self.store.db.dialect == "sqlite":
+            try:
+                self.store.db.execute("PRAGMA wal_checkpoint(FULL)")
+            except Exception:  # noqa: BLE001
+                pass
+        self.close()
+        return {
+            "edge_id": self.edge_id,
+            "reason": reason,
+            "pending_before": pending_before,
+            "pending_after": pending_after,
+            "status": "shutdown_complete",
+        }
 
     def sync_config_if_needed(self) -> dict[str, Any] | None:
         """Busca intenção de configuração no CORE e aplica somente se a versão avançou (§20)."""

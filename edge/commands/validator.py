@@ -20,7 +20,7 @@ from common.db import dumps, loads
 from common.device_store import DeviceStore
 from common.timeutil import now_iso, utc_now
 from contracts.canonical import CanonicalEvent, EventType, Quality, TimestampSource
-from contracts.commands import Command, CommandState, verify_command
+from contracts.commands import Command, CommandState, verify_command, verify_command_keyring
 from contracts.devices import COMMAND_ACCEPTING
 from edge.adapters.lorawan.downlink import (
     NODE_C_ADAPTER,
@@ -29,6 +29,7 @@ from edge.adapters.lorawan.downlink import (
 )
 from edge.adapters.modbus.adapter import ModbusAdapter
 from edge.adapters.modbus.client import ModbusClient
+from edge.monitoring.time_health import TimeHealthMonitor
 from edge.storage.repository import EdgeStore
 
 
@@ -43,15 +44,19 @@ class CommandValidator:
         modbus_adapter: ModbusAdapter | None = None,
         downlink_client: ChirpStackDownlinkClient | None = None,
         node_c_adapter: NodeCBridgeAdapter | None = None,
+        keyring: dict[str, bytes] | None = None,
+        time_health: TimeHealthMonitor | None = None,
     ):
         self.edge_id = edge_id
         self.edge_key = edge_key
+        self.keyring = keyring if keyring is not None else {"k1": edge_key}
         self.store = store
         self.devices = devices
         self.modbus_clients = modbus_clients if modbus_clients is not None else {}
         self.modbus_adapter = modbus_adapter or ModbusAdapter()
         self.downlink_client = downlink_client
         self.node_c_adapter = node_c_adapter or NODE_C_ADAPTER
+        self.time_health = time_health
 
     def attach_modbus_client(self, device_id: str, client: ModbusClient) -> None:
         self.modbus_clients[device_id] = client
@@ -77,9 +82,20 @@ class CommandValidator:
 
         self._save(command, CommandState.RECEIVED, "received_by_edge")
 
-        # 1. Autoridade (assinatura HMAC por EDGE) — PIT-T10
-        if not verify_command(command, self.edge_key):
+        # 1. Autoridade (assinatura HMAC por EDGE e key_id) — PIT-T10 / ARQ-002 §3.3
+        sig_ok = (
+            verify_command_keyring(command, self.keyring)
+            if command.key_id in self.keyring
+            else verify_command(command, self.edge_key)
+        )
+        if not sig_ok:
             return self._finish(command, CommandState.REJECTED, "invalid_signature")
+
+        # 1.5. Saúde do relógio do EDGE (ARQ-002 §10.4)
+        if self.time_health is not None:
+            th = self.time_health.check() if now is None else self.time_health.status()
+            if not th.healthy:
+                return self._finish(command, CommandState.REJECTED, f"clock_untrusted:{th.reason}")
 
         # 2. Prazo de validade — PIT-T11
         if command.is_expired(now_dt):

@@ -1,10 +1,17 @@
-"""Downlink LoRaWAN (ChirpStack Classe C) e ponte NODE-C -> Modbus RTU -> CLP (POC-001 §4.2).
+"""Downlink LoRaWAN (ChirpStack Classe C) e ponte NODE-C -> Modbus RTU -> CLP (ARQ-002 §6).
 
 Caminho P01-B (bomba remota):
     TERRANET EDGE -> ChirpStack MQTT Downlink -> NODE-C -> Modbus RTU -> CLP -> Intertravamentos
     CLP -> NODE-C -> Uplink de confirmação (fPort 20) -> TERRANET EDGE -> command_result
 
-Formato binário compacto (compatível com dwell time de 400 ms em AU915 / Anatel):
+Nota regulatória (RP002-1.0.5 / ARQ-002 Ajuste #1):
+    Na região AU915, o limite de dwell time (400 ms) depende da regulamentação local e
+    da direção do enlace — não deve ser tratado como regra universal. O frame abaixo é
+    mantido compacto (11 bytes) por eficiência de tempo-no-ar, mas taxa de dados (DR),
+    conformidade Anatel e TTL por operação devem ser validados com medição real da
+    latência ponta a ponta em bancada.
+
+Formato binário:
 * Downlink (11 bytes, big-endian):
     [0]     0xC1 (magic downlink NODE-C)
     [1..4]  tag de 4 bytes (SHA-256 prefix do command_id)
@@ -17,7 +24,7 @@ Formato binário compacto (compatível com dwell time de 400 ms em AU915 / Anate
     [0]     0xC2 (magic ack NODE-C)
     [1..4]  tag de 4 bytes (eco do command_id)
     [5]     status_code (0=VERIFIED, 1=INTERLOCK_BLOCKED, 2=MODBUS_ERROR, 3=EXPIRED, 4=REJECTED)
-    [6]     observed_bits (bit0=pump_running, bit1=remote_ok, bit2=dry_run_ok, bit3=overload, bit4=estop)
+    [6]     observed_bits (bit0=pump_running, bit1=remote_ok, bit2=dry_run_ok, bit3=overload, bit4=estop, bit5=loto)
     [7..8]  CRC-16/MODBUS (uint16)
 """
 
@@ -29,6 +36,7 @@ import hashlib
 import json
 import struct
 import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -53,12 +61,37 @@ STATUS_MODBUS_ERROR = 2
 STATUS_EXPIRED = 3
 STATUS_REJECTED = 4
 
-_STATUS_MAP: dict[int, tuple[CommandState, str, bool]] = {
-    STATUS_VERIFIED: (CommandState.VERIFIED, "physical_state_verified_via_node_c", False),
-    STATUS_INTERLOCK_BLOCKED: (CommandState.REJECTED, "interlock_failed: blocked_at_plc_via_node_c", True),
-    STATUS_MODBUS_ERROR: (CommandState.FAILED, "node_c_modbus_rtu_error", False),
-    STATUS_EXPIRED: (CommandState.EXPIRED, "expired_at_node_c", False),
-    STATUS_REJECTED: (CommandState.REJECTED, "rejected_by_node_c", False),
+_STATUS_MAP: dict[int, tuple[CommandState, str, str, bool]] = {
+    STATUS_VERIFIED: (
+        CommandState.VERIFIED,
+        CommandState.PHYSICAL_STATE_VERIFIED.value,
+        "physical_state_verified_via_node_c",
+        False,
+    ),
+    STATUS_INTERLOCK_BLOCKED: (
+        CommandState.REJECTED,
+        CommandState.PLC_REJECTED.value,
+        "interlock_failed: blocked_at_plc_via_node_c",
+        True,
+    ),
+    STATUS_MODBUS_ERROR: (
+        CommandState.FAILED,
+        CommandState.EXECUTION_FAILED.value,
+        "node_c_modbus_rtu_error",
+        False,
+    ),
+    STATUS_EXPIRED: (
+        CommandState.EXPIRED,
+        CommandState.EXPIRED.value,
+        "expired_at_node_c",
+        False,
+    ),
+    STATUS_REJECTED: (
+        CommandState.REJECTED,
+        CommandState.PLC_REJECTED.value,
+        "rejected_by_node_c",
+        False,
+    ),
 }
 
 
@@ -173,7 +206,7 @@ class NodeCBridgeAdapter(ChirpStackAdapter):
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._pending_by_tag: dict[bytes, dict[str, str]] = {}
+        self._pending_by_tag: dict[bytes, dict[str, Any]] = {}
 
     def register_pending(self, command: Command) -> bytes:
         tag = command_tag(command.command_id)
@@ -182,10 +215,11 @@ class NodeCBridgeAdapter(ChirpStackAdapter):
                 "command_id": command.command_id,
                 "correlation_id": command.correlation_id,
                 "operation": command.operation,
+                "dispatched_mono": time.monotonic(),
             }
         return tag
 
-    def pop_pending(self, tag: bytes) -> dict[str, str] | None:
+    def pop_pending(self, tag: bytes) -> dict[str, Any] | None:
         with self._lock:
             return self._pending_by_tag.pop(tag, None)
 
@@ -246,11 +280,33 @@ class NodeCBridgeAdapter(ChirpStackAdapter):
             cmd_id = pending["command_id"] if pending else f"tag:{ack['tag'].hex()}"
             corr_id = pending["correlation_id"] if pending else ""
             op = pending["operation"] if pending else "unknown"
-            state, reason, interlock_blocked = _STATUS_MAP.get(
+            latency_ms = (
+                round((time.monotonic() - float(pending["dispatched_mono"])) * 1000.0, 2)
+                if pending and "dispatched_mono" in pending
+                else None
+            )
+            state, arq2_state, reason, interlock_blocked = _STATUS_MAP.get(
                 ack["status_code"],
-                (CommandState.UNKNOWN, f"unknown_node_c_status:{ack['status_code']}", False),
+                (
+                    CommandState.UNKNOWN,
+                    CommandState.UNKNOWN.value,
+                    f"unknown_node_c_status:{ack['status_code']}",
+                    False,
+                ),
             )
             observed_at, ts_source, _ = self._resolve_ack_time(raw.get("time"), received_at)
+            attrs: dict[str, Any] = {
+                "command_id": cmd_id,
+                "correlation_id": corr_id,
+                "operation": op,
+                "state": state.value,
+                "arq2_state": arq2_state,
+                "reason": reason,
+                "interlock_blocked": interlock_blocked,
+                "observed_state": ack["observed_state"],
+            }
+            if latency_ms is not None:
+                attrs["latency_ms"] = latency_ms
             event = CanonicalEvent(
                 event_id=f"cmdres:{cmd_id}:{state.value.lower()}",
                 tenant_id=device.tenant_id,
@@ -266,15 +322,7 @@ class NodeCBridgeAdapter(ChirpStackAdapter):
                     transport="lorawan_class_c",
                     f_port=cmd_port,
                 ),
-                attributes={
-                    "command_id": cmd_id,
-                    "correlation_id": corr_id,
-                    "operation": op,
-                    "state": state.value,
-                    "reason": reason,
-                    "interlock_blocked": interlock_blocked,
-                    "observed_state": ack["observed_state"],
-                },
+                attributes=attrs,
             )
             return [event]
         return super().to_events(raw, device, received_at, context=context)

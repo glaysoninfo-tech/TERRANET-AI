@@ -28,7 +28,7 @@ from core.identity.auth import (
     UserPrincipal,
 )
 from core.notifications.service import NotificationService
-from core.poc_report import build_poc_report_from_store
+from core.poc_report import EnergyGate, build_poc_report_from_store, evaluate_energy_gate
 from core.storage.repository import CoreStore
 from core.telemetry.service import TelemetryIngestionService
 
@@ -75,6 +75,17 @@ class CommandCreateRequest(BaseModel):
 class RuleCreateRequest(BaseModel):
     site_id: str
     rule: dict[str, Any]
+
+
+class EnergyGateRequest(BaseModel):
+    avg_power_w: float
+    battery_nominal_wh: float
+    panel_wp: float
+    autonomy_hours: float = 48.0
+    usable_fraction: float = 0.70
+    hsp: float = 3.5
+    system_efficiency: float = 0.65
+    recovery_days: float = 3.0
 
 
 def create_app(
@@ -487,6 +498,16 @@ def create_app(
             gateway_autonomy_hours=gateway_autonomy_hours,
             node_autonomy_hours=node_autonomy_hours,
         )
+
+    @app.post("/api/v1/poc/energy-gate")
+    def poc_energy_gate(
+        body: EnergyGateRequest,
+        user: UserPrincipal = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return evaluate_energy_gate(EnergyGate(**body.model_dump()))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # --------------------------------------------------------- IHC Web (UI)
     web_dir = Path(__file__).resolve().parent.parent / "web"

@@ -32,9 +32,15 @@
     "confirmation_policy": { "enum": ["feedback", "none"] },
     "correlation_id": { "type": "string" },
     "state": {
-      "enum": ["CREATED", "AUTHORIZED", "DISPATCHED", "RECEIVED", "ACCEPTED", "EXECUTED",
-               "VERIFIED", "REJECTED", "EXPIRED", "FAILED", "UNKNOWN"]
+      "enum": [
+        "CREATED", "AUTHORIZED", "DISPATCHED", "QUEUED", "TRANSMITTED",
+        "NODE_RECEIVED", "RECEIVED", "ACCEPTED", "PLC_ACCEPTED",
+        "EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED",
+        "REJECTED", "PLC_REJECTED", "EXPIRED", "RADIO_TIMEOUT",
+        "FAILED", "EXECUTION_FAILED", "UNKNOWN"
+      ]
     },
-    "signature": { "type": "string", "description": "HMAC-SHA256 com chave derivada por EDGE" }
+    "key_id": { "type": "string", "description": "Identificador da versão da chave HMAC" },
+    "signature": { "type": "string", "description": "HMAC-SHA256 com chave derivada por EDGE e key_id" }
   }
 }

@@ -15,6 +15,61 @@ from core.storage.repository import CoreStore
 
 
 @dataclass
+class EnergyGate:
+    """Validador preliminar do Gate energético (ARQ-002 §7–8)."""
+
+    avg_power_w: float
+    battery_nominal_wh: float
+    panel_wp: float
+    autonomy_hours: float = 48.0
+    usable_fraction: float = 0.70
+    hsp: float = 3.5
+    system_efficiency: float = 0.65
+    recovery_days: float = 3.0
+
+
+def evaluate_energy_gate(system: EnergyGate) -> dict[str, Any]:
+    if (
+        min(
+            system.avg_power_w,
+            system.battery_nominal_wh,
+            system.panel_wp,
+            system.autonomy_hours,
+            system.hsp,
+            system.recovery_days,
+        )
+        <= 0
+    ):
+        raise ValueError("Parâmetros devem ser positivos")
+    if not 0 < system.usable_fraction <= 1:
+        raise ValueError("Fração útil inválida")
+    if not 0 < system.system_efficiency <= 1:
+        raise ValueError("Eficiência inválida")
+
+    daily_consumption = system.avg_power_w * 24.0
+    usable_battery = system.battery_nominal_wh * system.usable_fraction
+    autonomy = usable_battery / system.avg_power_w
+    daily_generation = system.panel_wp * system.hsp * system.system_efficiency
+    daily_surplus = daily_generation - daily_consumption
+    energy_to_recover = system.avg_power_w * system.autonomy_hours
+    required_daily_surplus = energy_to_recover / system.recovery_days
+
+    autonomy_ok = autonomy >= system.autonomy_hours
+    recovery_ok = daily_surplus >= required_daily_surplus
+    return {
+        "daily_consumption_wh": round(daily_consumption, 2),
+        "usable_battery_wh": round(usable_battery, 2),
+        "autonomy_hours": round(autonomy, 2),
+        "daily_generation_wh": round(daily_generation, 2),
+        "daily_surplus_wh": round(daily_surplus, 2),
+        "required_daily_surplus_wh": round(required_daily_surplus, 2),
+        "autonomy_ok": autonomy_ok,
+        "recovery_ok": recovery_ok,
+        "approved": autonomy_ok and recovery_ok,
+    }
+
+
+@dataclass
 class NodeTest:
     name: str
     expected_messages: int
@@ -109,24 +164,40 @@ def build_poc_report_from_store(
             manufacturers.add(dev.manufacturer.strip().lower())
         else:
             manufacturers.add(dev.metadata.get("decoder", dev.adapter_id))
-        received = int(
-            store.db.scalar(
-                "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = ? "
-                "AND device_id = ? AND event_type = 'telemetry'",
-                (tenant_id, dev.device_id),
-            )
-            or 0
+        ev_rows = store.db.query(
+            "SELECT payload FROM telemetry_events WHERE tenant_id = ? "
+            "AND device_id = ? AND event_type = 'telemetry'",
+            (tenant_id, dev.device_id),
         )
+        received = len(ev_rows)
+        # ARQ-002 §13.3: distingue PDR_radio (via fCnt LoRaWAN) de Disponibilidade_dados
+        fcnts = sorted(
+            {
+                int(src["f_cnt"])
+                for r in ev_rows
+                for src in [((loads(r["payload"]) or {}).get("source") or {})]
+                if isinstance(src.get("f_cnt"), int)
+            }
+        )
+        if len(fcnts) >= 2:
+            transmitted_est = (fcnts[-1] - fcnts[0]) + 1
+            radio_pdr = round(min(100.0, len(fcnts) / transmitted_est * 100.0), 2)
+        else:
+            radio_pdr = None
+
         capped = min(received, expected_messages_per_node)
         nt = NodeTest(dev.device_id, expected_messages_per_node, capped)
         node_tests.append(nt)
+        data_avail = round(nt.pdr(), 2)
         node_details.append(
             {
                 "device_id": dev.device_id,
                 "manufacturer": dev.manufacturer or "não informado",
                 "expected_messages": expected_messages_per_node,
                 "received_messages": received,
-                "pdr_pct": round(nt.pdr(), 2),
+                "data_availability_pct": data_avail,
+                "radio_pdr_pct": radio_pdr,
+                "pdr_pct": data_avail,
                 "approved": nt.pdr() >= 95.0,
             }
         )
@@ -182,6 +253,18 @@ def build_poc_report_from_store(
     adapters_used = [d.adapter_id for d in devices]
     reused = max(0, len(adapters_used) - len(set(adapters_used)))
 
+    # Evidência de testes negativos deliberados de segurança (ARQ-002 §13.4)
+    interlock_blocked = sum(
+        1 for c in commands if c["state"] in ("REJECTED", "PLC_REJECTED") and "interlock" in (c.get("reason") or "")
+    )
+    audit_rejected = int(
+        store.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? AND outcome = 'rejected'",
+            (tenant_id,),
+        )
+        or 0
+    )
+
     return {
         "tenant_id": tenant_id,
         "decision": decision,
@@ -200,6 +283,12 @@ def build_poc_report_from_store(
             "track_delayed_offline_recovered": delayed_track,
             "track_can_j1939_events": can_events,
             "reuse_ratio_pct": reuse_ratio(reused, len(adapters_used)),
+        },
+        "negative_security_tests": {
+            "expired_blocked_evidence": expired_rejected,
+            "interlock_blocked_evidence": interlock_blocked,
+            "audit_rejected_evidence": audit_rejected,
+            "verified": (expired_rejected > 0 and (interlock_blocked > 0 or audit_rejected > 0)),
         },
         "field_measurements": {
             "offline_hours": offline_hours,
@@ -245,10 +334,12 @@ def main() -> None:
 
 
 __all__ = [
+    "EnergyGate",
     "NodeTest",
     "SystemTest",
     "build_poc_report_from_store",
     "decide_go_nogo",
+    "evaluate_energy_gate",
     "evaluate_poc",
     "loads",
     "print_report",

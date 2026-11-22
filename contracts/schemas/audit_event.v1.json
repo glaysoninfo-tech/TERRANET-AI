@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/audit_event/1.0",
+  "title": "TERRANET immutable audit record (ARQ-002 §3.1)",
+  "type": "object",
+  "required": ["id", "at", "actor", "action", "target", "outcome"],
+  "properties": {
+    "id": { "type": "string" },
+    "at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": ["string", "null"] },
+    "actor": { "type": "string" },
+    "action": { "type": "string" },
+    "target": { "type": "string" },
+    "outcome": { "type": "string" },
+    "details": { "type": "object" }
+  }
+}

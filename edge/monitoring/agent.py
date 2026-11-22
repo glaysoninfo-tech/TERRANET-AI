@@ -45,6 +45,8 @@ class MonitoringAgent:
         self.sync_failures = self.metrics.counter("edge_sync_failures", "Falhas de sincronização")
         self.adapter_errors = self.metrics.counter("edge_adapter_errors", "Erros nos adaptadores")
         self.rule_errors = self.metrics.counter("edge_rule_execution_errors", "Erros no motor de regras")
+        self.clock_healthy = self.metrics.gauge("edge_clock_healthy", "Saúde do relógio RTC/NTP do EDGE")
+        self.clock_healthy.set(1.0)
 
         # Indicadores de dispositivos e comandos (§18.2, §18.3)
         self.device_messages = self.metrics.counter("terranet_device_messages_total", "Mensagens recebidas")

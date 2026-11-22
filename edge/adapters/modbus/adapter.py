@@ -34,6 +34,7 @@ DEFAULT_PUMP_REGISTER_MAP: dict[str, dict[str, Any]] = {
     "dry_run_ok_state": {"kind": "coil", "address": 2},
     "overload_fault_state": {"kind": "coil", "address": 3},
     "emergency_stop_state": {"kind": "coil", "address": 4},
+    "loto_locked_state": {"kind": "coil", "address": 5},
 }
 
 
@@ -184,9 +185,16 @@ class ModbusAdapter(Adapter):
                 observed_state={},
             )
 
-        # 2. Para partida, verificar permissivos locais no EDGE (defesa em profundidade;
-        # o CLP continua mantendo seus próprios intertravamentos independentemente).
+        # 2. Para partida, verificar modo físico (LOTO/Manual/Fault) e permissivos locais no EDGE
+        # (defesa em profundidade; o CLP mantém seus próprios intertravamentos independentemente).
         if target_running:
+            if pre_state.get("loto_locked_state"):
+                return ExecutionOutcome(
+                    state=CommandState.REJECTED,
+                    reason="interlock_failed: physical_loto_locked",
+                    observed_state=pre_state,
+                    interlock_blocked=True,
+                )
             if pre_state.get("emergency_stop_state"):
                 return ExecutionOutcome(
                     state=CommandState.REJECTED,

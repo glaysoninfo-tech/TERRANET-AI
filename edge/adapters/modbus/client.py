@@ -11,6 +11,8 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from contracts.assets import ControlMode, resolve_control_mode
+
 
 class ModbusTransportError(IOError):
     """Falha de comunicação ou controlador indisponível."""
@@ -210,6 +212,7 @@ class SimulatedPumpPLC(ModbusClient):
     dry_run_interlock_ok: bool = True
     overload_fault: bool = False
     emergency_stop_active: bool = False
+    loto_locked: bool = False
     suction_level_m: float = 1.80
     discharge_pressure_bar: float = 0.0
     motor_current_a: float = 0.0
@@ -223,8 +226,19 @@ class SimulatedPumpPLC(ModbusClient):
         if not self.online:
             raise ModbusTransportError("CLP offline / sem comunicação")
 
+    @property
+    def control_mode(self) -> ControlMode:
+        """Modo efetivo derivado diretamente dos estados físicos do painel/CLP (ARQ-002 §14)."""
+        return resolve_control_mode(
+            physical_remote_enabled=self.remote_mode_enabled,
+            physical_loto_locked=self.loto_locked,
+            physical_fault=self.emergency_stop_active or self.overload_fault,
+        )
+
     def interlocks_ok(self) -> tuple[bool, str]:
         """Intertravamentos físicos residentes no CLP (não contornáveis por software)."""
+        if self.loto_locked:
+            return False, "physical_loto_locked"
         if self.emergency_stop_active:
             return False, "emergency_stop_active"
         if not self.remote_mode_enabled:
@@ -264,6 +278,7 @@ class SimulatedPumpPLC(ModbusClient):
                 self.dry_run_interlock_ok,
                 self.overload_fault,
                 self.emergency_stop_active,
+                self.loto_locked,
             ]
             end = address + count
             if address < 0 or end > len(coils):

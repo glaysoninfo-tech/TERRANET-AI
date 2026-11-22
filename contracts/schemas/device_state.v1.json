@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/device_state/1.0",
+  "title": "TERRANET current device state snapshot (ARQ-002 §3.1)",
+  "type": "object",
+  "required": ["device_id", "observed_at", "measurements", "quality"],
+  "properties": {
+    "device_id": { "type": "string" },
+    "tenant_id": { "type": "string" },
+    "site_id": { "type": "string" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "measurements": { "type": "object" },
+    "quality": { "type": "object" },
+    "location": { "type": ["object", "null"] },
+    "control_mode": {
+      "enum": ["LOCAL_MANUAL", "LOCAL_AUTO", "REMOTE_SUPERVISED", "MAINTENANCE", "LOTO_LOCKED", "FAULT"]
+    }
+  }
+}

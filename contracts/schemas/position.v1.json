@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/position/1.0",
+  "title": "TERRANET canonical position event (ARQ-002 §3.2)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "tenant_id",
+    "site_id",
+    "device_id",
+    "event_type",
+    "observed_at",
+    "received_at",
+    "location"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "event_id": { "type": "string" },
+    "tenant_id": { "type": "string" },
+    "site_id": { "type": "string" },
+    "device_id": { "type": "string" },
+    "event_type": { "const": "position" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "received_at": { "type": "string", "format": "date-time" },
+    "location": {
+      "type": "object",
+      "required": ["lat", "lon"],
+      "properties": {
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "lon": { "type": "number", "minimum": -180, "maximum": 180 },
+        "alt_m": { "type": "number" },
+        "speed_kmh": { "type": "number" },
+        "heading_deg": { "type": "number" },
+        "satellites": { "type": "integer" },
+        "hdop": { "type": "number" }
+      }
+    },
+    "measurements": { "type": "object" },
+    "quality": { "type": "object" },
+    "source": { "type": "object" },
+    "attributes": { "type": "object" }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/command_result/1.0",
+  "title": "TERRANET canonical command result event (ARQ-002 §3.1, §6.3)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "tenant_id",
+    "site_id",
+    "device_id",
+    "event_type",
+    "observed_at",
+    "received_at",
+    "attributes"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "event_type": { "const": "command_result" },
+    "attributes": {
+      "type": "object",
+      "required": ["command_id", "state"],
+      "properties": {
+        "command_id": { "type": "string" },
+        "correlation_id": { "type": "string" },
+        "operation": { "type": "string" },
+        "state": {
+          "enum": [
+            "RECEIVED", "ACCEPTED", "EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED",
+            "REJECTED", "PLC_REJECTED", "EXPIRED", "RADIO_TIMEOUT",
+            "FAILED", "EXECUTION_FAILED", "UNKNOWN"
+          ]
+        },
+        "reason": { "type": "string" },
+        "interlock_blocked": { "type": "boolean" },
+        "latency_ms": { "type": "number" },
+        "observed_state": { "type": "object" }
+      }
+    }
+  }
+}

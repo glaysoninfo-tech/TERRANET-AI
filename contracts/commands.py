@@ -23,29 +23,57 @@ class CommandState(StrEnum):
     CREATED = "CREATED"
     AUTHORIZED = "AUTHORIZED"
     DISPATCHED = "DISPATCHED"
+    QUEUED = "QUEUED"
+    TRANSMITTED = "TRANSMITTED"
+    NODE_RECEIVED = "NODE_RECEIVED"
     RECEIVED = "RECEIVED"
     ACCEPTED = "ACCEPTED"
+    PLC_ACCEPTED = "PLC_ACCEPTED"
     EXECUTED = "EXECUTED"
+    PLC_EXECUTED = "PLC_EXECUTED"
     VERIFIED = "VERIFIED"
+    PHYSICAL_STATE_VERIFIED = "PHYSICAL_STATE_VERIFIED"
     REJECTED = "REJECTED"
+    PLC_REJECTED = "PLC_REJECTED"
     EXPIRED = "EXPIRED"
+    RADIO_TIMEOUT = "RADIO_TIMEOUT"
     FAILED = "FAILED"
+    EXECUTION_FAILED = "EXECUTION_FAILED"
     UNKNOWN = "UNKNOWN"
 
 
-MAIN_PATH = [
-    CommandState.CREATED,
-    CommandState.AUTHORIZED,
-    CommandState.DISPATCHED,
-    CommandState.RECEIVED,
-    CommandState.ACCEPTED,
-    CommandState.EXECUTED,
-    CommandState.VERIFIED,
-]
+# Ordem progressiva (suporta tanto fluxo PIT-001 quanto estados detalhados de rádio ARQ-002 §6.3)
+_STATE_RANK: dict[CommandState, int] = {
+    CommandState.CREATED: 0,
+    CommandState.AUTHORIZED: 1,
+    CommandState.QUEUED: 2,
+    CommandState.DISPATCHED: 2,
+    CommandState.TRANSMITTED: 3,
+    CommandState.NODE_RECEIVED: 4,
+    CommandState.RECEIVED: 4,
+    CommandState.ACCEPTED: 5,
+    CommandState.PLC_ACCEPTED: 5,
+    CommandState.EXECUTED: 6,
+    CommandState.PLC_EXECUTED: 6,
+    CommandState.VERIFIED: 7,
+    CommandState.PHYSICAL_STATE_VERIFIED: 7,
+}
+
 ALTERNATIVE_STATES = frozenset(
-    {CommandState.REJECTED, CommandState.EXPIRED, CommandState.FAILED, CommandState.UNKNOWN}
+    {
+        CommandState.REJECTED,
+        CommandState.PLC_REJECTED,
+        CommandState.EXPIRED,
+        CommandState.RADIO_TIMEOUT,
+        CommandState.FAILED,
+        CommandState.EXECUTION_FAILED,
+        CommandState.UNKNOWN,
+    }
 )
-TERMINAL_STATES = ALTERNATIVE_STATES | {CommandState.VERIFIED}
+TERMINAL_STATES = ALTERNATIVE_STATES | {
+    CommandState.VERIFIED,
+    CommandState.PHYSICAL_STATE_VERIFIED,
+}
 
 MIN_TTL_S = 5
 MAX_TTL_S = 600
@@ -62,7 +90,7 @@ def can_transition(current: str, new: str) -> bool:
         return False
     if new in ALTERNATIVE_STATES:
         return True
-    return MAIN_PATH.index(new) > MAIN_PATH.index(current)
+    return _STATE_RANK[new] > _STATE_RANK[current]
 
 
 @dataclass
@@ -81,6 +109,7 @@ class Command:
     confirmation_policy: str = "feedback"
     correlation_id: str = ""
     state: str = CommandState.CREATED.value
+    key_id: str = "k1"
     signature: str = ""
 
     SIGNED_FIELDS = (
@@ -97,6 +126,7 @@ class Command:
         "expected_state",
         "confirmation_policy",
         "correlation_id",
+        "key_id",
     )
 
     def signing_payload(self) -> bytes:
@@ -112,8 +142,8 @@ class Command:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Command:
         known = {f for f in cls.__dataclass_fields__}
-        missing = [k for k in cls.SIGNED_FIELDS if k not in data and k not in (
-            "params", "expected_state", "confirmation_policy", "correlation_id")]
+        optional = {"params", "expected_state", "confirmation_policy", "correlation_id", "key_id"}
+        missing = [k for k in cls.SIGNED_FIELDS if k not in data and k not in optional]
         if missing:
             raise ValueError(f"Comando incompleto: {missing}")
         cmd = cls(**{k: v for k, v in data.items() if k in known})
@@ -124,11 +154,12 @@ class Command:
         return cmd
 
 
-def derive_edge_key(master_key: bytes | str, edge_id: str) -> bytes:
-    """Chave por EDGE: o comprometimento de um EDGE não permite forjar comandos para outros."""
+def derive_edge_key(master_key: bytes | str, edge_id: str, key_id: str = "k1") -> bytes:
+    """Chave derivada por EDGE e versão de credencial (ARQ-002 §3.3)."""
     if isinstance(master_key, str):
         master_key = master_key.encode()
-    return hmac.new(master_key, f"terranet-command:{edge_id}".encode(), hashlib.sha256).digest()
+    context = f"terranet-command:{edge_id}" if key_id == "k1" else f"terranet-command:{edge_id}:{key_id}"
+    return hmac.new(master_key, context.encode(), hashlib.sha256).digest()
 
 
 def sign_command(command: Command, key: bytes) -> str:
@@ -139,3 +170,11 @@ def verify_command(command: Command, key: bytes) -> bool:
     if not command.signature:
         return False
     return hmac.compare_digest(sign_command(command, key), command.signature)
+
+
+def verify_command_keyring(command: Command, keyring: dict[str, bytes]) -> bool:
+    """Verifica assinatura usando o `key_id` declarado para rotação sem indisponibilidade."""
+    key = keyring.get(command.key_id)
+    if key is None:
+        return False
+    return verify_command(command, key)
