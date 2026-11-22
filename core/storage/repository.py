@@ -417,7 +417,7 @@ class CoreStore:
         if site_ids is not None:
             if not site_ids:
                 return []
-            sql += f" AND site_id IN ({','.join('?' for _ in site_ids)})"
+            sql += f" AND site_id IN ({','.join('?' for _ in site_ids)})"  # nosec B608
             params.extend(site_ids)
         return [loads(r["definition"]) for r in self.db.query(sql + " ORDER BY rule_id", params)]
 

@@ -166,26 +166,50 @@ def build_poc_report_from_store(
     gateway_autonomy_hours: float = 0.0,
     node_autonomy_hours: float = 0.0,
     persisted_edge_events: int | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
 ) -> dict[str, Any]:
-    """Gera o relatório POC-E16 a partir dos registros reais do TERRANET CORE."""
+    """Gera o relatório POC-E16 a partir dos registros reais do TERRANET CORE.
+
+    Correções AUD-002 (§9.1–9.3):
+    * Janela temporal explícita (`started_at` / `finished_at`) para evitar contaminação
+      por eventos anteriores ao ensaio.
+    * Interoperabilidade exige `manufacturer` físico verificável (sem fallback por decoder).
+    * Expiração de comandos avalia o timestamp efetivo da execução física (`command_result.observed_at`),
+      não `commands.updated_at`.
+    """
+    from common.timeutil import normalize_iso, parse_ts
+
+    start_iso = normalize_iso(started_at) if started_at else None
+    end_iso = normalize_iso(finished_at) if finished_at else None
+    win_start = start_iso or "1970-01-01T00:00:00+00:00"
+    win_end = end_iso or "9999-12-31T23:59:59+00:00"
+
     devices = store.devices.list(tenant_id=tenant_id)
-    node_s_devices = [d for d in devices if d.category in ("NODE", "NODE-S") and d.source_type == "lorawan"]
+    node_s_devices = [
+        d for d in devices if d.category in ("NODE", "NODE-S") and d.source_type == "lorawan"
+    ]
     pump_devices = [d for d in devices if d.category == "NODE-C" or d.source_type == "modbus"]
     track_devices = [d for d in devices if d.source_type == "tracker"]
 
     node_tests: list[NodeTest] = []
     node_details: list[dict[str, Any]] = []
     manufacturers: set[str] = set()
+    unverified_nodes: list[str] = []
 
     for dev in node_s_devices:
-        if dev.manufacturer:
-            manufacturers.add(dev.manufacturer.strip().lower())
+        # AUD-002 §9.2: exige fabricante físico verificável (nunca usa decoder/adapter como fallback)
+        mfg = dev.manufacturer.strip()
+        if mfg:
+            manufacturers.add(mfg.lower())
         else:
-            manufacturers.add(dev.metadata.get("decoder", dev.adapter_id))
+            unverified_nodes.append(dev.device_id)
+
         ev_rows = store.db.query(
             "SELECT payload FROM telemetry_events WHERE tenant_id = ? "
-            "AND device_id = ? AND event_type = 'telemetry'",
-            (tenant_id, dev.device_id),
+            "AND device_id = ? AND event_type = 'telemetry' "
+            "AND observed_at >= ? AND observed_at <= ?",
+            (tenant_id, dev.device_id, win_start, win_end),
         )
         received = len(ev_rows)
         # ARQ-002 §13.3: distingue PDR_radio (via fCnt LoRaWAN) de Disponibilidade_dados
@@ -210,7 +234,10 @@ def build_poc_report_from_store(
         node_details.append(
             {
                 "device_id": dev.device_id,
-                "manufacturer": dev.manufacturer or "não informado",
+                "manufacturer": mfg or None,
+                "model": dev.model.strip() or None,
+                "firmware_version": dev.firmware_version.strip() or None,
+                "hardware_verified": bool(mfg and dev.model.strip()),
                 "expected_messages": expected_messages_per_node,
                 "received_messages": received,
                 "data_availability_pct": data_avail,
@@ -220,8 +247,12 @@ def build_poc_report_from_store(
             }
         )
 
-    # Contagens de comandos e auditoria real de violações (AUD-001 §7 — sem zeros hardcoded!)
-    commands = store.list_commands(tenant_id=tenant_id, limit=1000)
+    # Contagens de comandos filtradas pela janela temporal do ensaio
+    commands = store.db.query(
+        "SELECT * FROM commands WHERE tenant_id = ? "
+        "AND issued_at >= ? AND issued_at <= ? ORDER BY issued_at DESC",
+        (tenant_id, win_start, win_end),
+    )
     expired_rejected = sum(1 for c in commands if c["state"] == "EXPIRED")
     verified_commands = sum(
         1 for c in commands if c["state"] in ("VERIFIED", "PHYSICAL_STATE_VERIFIED")
@@ -234,29 +265,49 @@ def build_poc_report_from_store(
         for c in commands
         if c["state"] in ("REJECTED", "PLC_REJECTED") and "interlock" in (c.get("reason") or "")
     )
+
     audit_rejected = int(
         store.db.scalar(
-            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? AND outcome = 'rejected'",
-            (tenant_id,),
+            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? AND outcome = 'rejected' "
+            "AND at >= ? AND at <= ?",
+            (tenant_id, win_start, win_end),
         )
         or 0
     )
 
-    # Evidências registradas formalmente na tabela test_executions
-    executions = store.list_test_executions(tenant_id=tenant_id, limit=500)
+    # Evidências registradas formalmente na tabela test_executions (na janela do ensaio)
+    executions = store.db.query(
+        "SELECT * FROM test_executions WHERE tenant_id = ? "
+        "AND finished_at >= ? AND finished_at <= ? ORDER BY finished_at DESC",
+        (tenant_id, win_start, win_end),
+    )
     latest_by_code: dict[str, dict[str, Any]] = {}
     for ex in executions:
         latest_by_code.setdefault(ex["test_code"], ex)
 
-    # Detecta violações reais: comando expirado que chegou a EXECUTED/VERIFIED
-    from common.timeutil import parse_ts
-
-    expired_executed = sum(
-        1
-        for c in commands
-        if c["state"] in ("EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED")
-        and parse_ts(c["updated_at"]) > parse_ts(c["expires_at"])
+    # AUD-002 §9.3: avalia expiração pelo instante efetivo de execução/confirmação (command_result.observed_at)
+    cmd_res_rows = store.db.query(
+        "SELECT observed_at, payload FROM telemetry_events WHERE tenant_id = ? "
+        "AND event_type = 'command_result' AND observed_at >= ? AND observed_at <= ?",
+        (tenant_id, win_start, win_end),
     )
+    executed_at_by_cmd: dict[str, str] = {}
+    for row in cmd_res_rows:
+        payload = loads(row["payload"]) or {}
+        attrs = payload.get("attributes") or {}
+        cid = attrs.get("command_id")
+        st = attrs.get("state")
+        if cid and st in ("EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED"):
+            executed_at_by_cmd[str(cid)] = str(payload.get("observed_at") or row["observed_at"])
+
+    expired_executed = 0
+    for c in commands:
+        if c["state"] not in ("EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED"):
+            continue
+        effective_ts = executed_at_by_cmd.get(c["command_id"])
+        if effective_ts is not None and parse_ts(effective_ts) > parse_ts(c["expires_at"]):
+            expired_executed += 1
+
     unauthorized_executed = sum(
         1 for ex in executions if ex["test_code"] in ("POC-T09", "PIT-T10") and ex["status"] == "FAIL"
     )
@@ -264,8 +315,13 @@ def build_poc_report_from_store(
         1 for ex in executions if ex["test_code"] in ("POC-T10", "PIT-T12") and ex["status"] == "FAIL"
     )
 
-    # Posições e registros atrasados de TRACK (POC-T11 / POC-T12)
-    track_events = store.query_events(tenant_id=tenant_id, event_type="position", limit=1000)
+    # Posições e registros atrasados de TRACK na janela do ensaio (POC-T11 / POC-T12)
+    track_rows = store.db.query(
+        "SELECT payload FROM telemetry_events WHERE tenant_id = ? "
+        "AND event_type = 'position' AND observed_at >= ? AND observed_at <= ?",
+        (tenant_id, win_start, win_end),
+    )
+    track_events = [loads(r["payload"]) for r in track_rows]
     delayed_track = sum(
         1 for ev in track_events if (ev.get("attributes") or {}).get("delayed") is True
     )
@@ -282,7 +338,14 @@ def build_poc_report_from_store(
     if track_devices and len(track_events) > 0:
         apps += 1  # V01
 
-    core_total = store.count_events(tenant_id)
+    core_total = int(
+        store.db.scalar(
+            "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = ? "
+            "AND observed_at >= ? AND observed_at <= ?",
+            (tenant_id, win_start, win_end),
+        )
+        or 0
+    )
     persisted = core_total if persisted_edge_events is None else persisted_edge_events
 
     # Avaliação tri-estado (PASS / FAIL / NOT_TESTED) — impede falsa aprovação!
@@ -341,10 +404,12 @@ def build_poc_report_from_store(
 
     return {
         "tenant_id": tenant_id,
+        "window": {"started_at": start_iso, "finished_at": end_iso},
         "decision": decision,
         "criteria": criteria,
         "criteria_status": criteria_status,
         "nodes": node_details,
+        "unverified_nodes": unverified_nodes,
         "summary": {
             "total_devices": len(devices),
             "independent_node_manufacturers": len(manufacturers),

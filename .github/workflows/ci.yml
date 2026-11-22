@@ -22,13 +22,18 @@ jobs:
       - name: Validação do exemplo de referência (§16)
         run: python demo/pit_demo.py
       - name: Verificação de segurança (bandit)
-        run: bandit -r common contracts edge core -ll
+        run: bandit -r common contracts edge core -x "contracts/tests,edge/tests,core/tests" -ll
 
   docker-build:
     needs: static-analysis-and-tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validar configurações Docker Compose (EDGE, ARM e CORE)
+        run: |
+          docker compose --env-file deployments/edge/.env.example -f deployments/edge/docker-compose.yml config --quiet
+          docker compose --env-file deployments/edge/.env.example -f deployments/edge/docker-compose.yml -f deployments/edge/docker-compose.arm.yml config --quiet
+          docker compose --env-file deployments/cloud/.env.example -f deployments/cloud/docker-compose.yml config --quiet
       - name: Build imagem demo (§17.2)
         run: |
           docker build -t terranet-pit-demo ./demo

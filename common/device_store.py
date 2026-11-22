@@ -76,7 +76,7 @@ class DeviceStore:
                 )
             placeholders = ",".join("?" for _ in _COLUMNS)
             self.db.execute(
-                f"INSERT INTO devices ({','.join(_COLUMNS)}, updated_at) "  # noqa: S608
+                f"INSERT INTO devices ({','.join(_COLUMNS)}, updated_at) "  # noqa: S608  # nosec B608
                 f"VALUES ({placeholders}, ?)",
                 [*self._to_row(device), now],
             )
@@ -98,7 +98,7 @@ class DeviceStore:
                 if c not in ("device_id", "last_seen_at")
             ]
             self.db.execute(
-                f"UPDATE devices SET {assignments}, updated_at = ? WHERE device_id = ?",  # noqa: S608
+                f"UPDATE devices SET {assignments}, updated_at = ? WHERE device_id = ?",  # noqa: S608  # nosec B608
                 [*values, now, device.device_id],
             )
             if current.operational_status != device.operational_status:
@@ -167,7 +167,7 @@ class DeviceStore:
             site_ids = list(site_ids)
             if not site_ids:
                 return []
-            sql += f" AND site_id IN ({','.join('?' for _ in site_ids)})"
+            sql += f" AND site_id IN ({','.join('?' for _ in site_ids)})"  # nosec B608
             params.extend(site_ids)
         if source_type is not None:
             sql += " AND source_type = ?"

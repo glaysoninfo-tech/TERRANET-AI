@@ -504,16 +504,23 @@ def create_app(
         offline_hours: float = Query(default=0.0, ge=0.0),
         gateway_autonomy_hours: float = Query(default=0.0, ge=0.0),
         node_autonomy_hours: float = Query(default=0.0, ge=0.0),
+        started_at: str | None = Query(default=None),
+        finished_at: str | None = Query(default=None),
         user: UserPrincipal = Depends(current_user),
     ) -> dict[str, Any]:
-        return build_poc_report_from_store(
-            store=store,
-            tenant_id=user.tenant_id,
-            expected_messages_per_node=expected_messages,
-            offline_hours=offline_hours,
-            gateway_autonomy_hours=gateway_autonomy_hours,
-            node_autonomy_hours=node_autonomy_hours,
-        )
+        try:
+            return build_poc_report_from_store(
+                store=store,
+                tenant_id=user.tenant_id,
+                expected_messages_per_node=expected_messages,
+                offline_hours=offline_hours,
+                gateway_autonomy_hours=gateway_autonomy_hours,
+                node_autonomy_hours=node_autonomy_hours,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/v1/poc/energy-gate")
     def poc_energy_gate(

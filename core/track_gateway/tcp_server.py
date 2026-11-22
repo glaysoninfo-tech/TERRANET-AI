@@ -34,7 +34,7 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes | None:
 
 
 class TeltonikaTcpServer:
-    def __init__(self, store: CoreStore, host: str = "0.0.0.0", port: int = 5027):  # noqa: S104
+    def __init__(self, store: CoreStore, host: str = "127.0.0.1", port: int = 5027):
         self.store = store
         self.telemetry = TelemetryIngestionService(store)
         self.host = host
@@ -116,7 +116,7 @@ def main() -> None:
     import time
 
     db_url = os.environ.get("TERRANET_CORE_DB_URL", "sqlite:///data/core.db")
-    host = os.environ.get("TERRANET_TRACK_HOST", "0.0.0.0")  # noqa: S104
+    host = os.environ.get("TERRANET_TRACK_HOST", "127.0.0.1")
     port = int(os.environ.get("TERRANET_TRACK_PORT", "5027"))
     store = CoreStore.open(db_url)
     server = TeltonikaTcpServer(store, host=host, port=port)

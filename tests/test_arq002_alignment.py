@@ -492,3 +492,131 @@ def test_aud001_g1_r01_edge_deployment_consistency():
     # ARM configurado como override da stack completa (com limites em todos os serviços)
     for svc in ("postgres:", "redis:", "mosquitto:", "chirpstack:", "terranet-edge:"):
         assert svc in arm
+
+
+def test_aud002_report_window_verified_manufacturers_and_effective_exec_time(tmp_path):
+    """AUD-002 §9.1 (janela temporal), §9.2 (fabricante real) e §9.3 (execução efetiva vs updated_at)."""
+    from contracts.canonical import CanonicalEvent
+
+    store = CoreStore.open(f"sqlite:///{(tmp_path / 'core.db').as_posix()}")
+    store.create_tenant("C1", "Fazenda")
+    store.create_site("S1", "C1", "Sede")
+    store.register_edge("E1", "C1", ["S1"])
+
+    # Dois nodes sem manufacturer preenchido NÃO podem contar como 2 fabricantes físicos (§9.2)
+    store.devices.register(
+        Device.from_profile(
+            {
+                "device_id": "N-NOMFG-1",
+                "tenant_id": "C1",
+                "site_id": "S1",
+                "category": "NODE-S",
+                "manufacturer": "",
+                "communication": {"type": "lorawan", "dev_eui": "0101010101010101"},
+                "adapter": {"name": "lorawan_chirpstack"},
+                "operational_status": "ACTIVE",
+                "metadata": {"decoder": "chirpstack_object"},
+            }
+        )
+    )
+    store.devices.register(
+        Device.from_profile(
+            {
+                "device_id": "N-NOMFG-2",
+                "tenant_id": "C1",
+                "site_id": "S1",
+                "category": "NODE-S",
+                "manufacturer": "",
+                "communication": {"type": "lorawan", "dev_eui": "0202020202020202"},
+                "adapter": {"name": "lorawan_chirpstack"},
+                "operational_status": "ACTIVE",
+                "metadata": {"decoder": "terranet_level_v1"},
+            }
+        )
+    )
+    store.devices.register(
+        Device.from_profile(
+            {
+                "device_id": "PUMP-1",
+                "tenant_id": "C1",
+                "site_id": "S1",
+                "category": "NODE-C",
+                "communication": {"type": "modbus", "identifier": "plc-1"},
+                "adapter": {"name": "modbus_plc"},
+                "operational_status": "ACTIVE",
+            }
+        )
+    )
+
+    # Evento FORA da janela (ontem) e evento DENTRO da janela (hoje) (§9.1)
+    store.persist_event(
+        CanonicalEvent(
+            event_id="old-1",
+            tenant_id="C1",
+            site_id="S1",
+            device_id="N-NOMFG-1",
+            event_type="telemetry",
+            observed_at="2026-11-10T10:00:00Z",
+            received_at="2026-11-10T10:00:01Z",
+            measurements={"water_level_m": 2.0},
+            quality={"water_level_m": "valid", "timestamp_source": "network_server"},
+        )
+    )
+    store.persist_event(
+        CanonicalEvent(
+            event_id="in-win-1",
+            tenant_id="C1",
+            site_id="S1",
+            device_id="N-NOMFG-1",
+            event_type="telemetry",
+            observed_at="2026-11-22T10:00:00Z",
+            received_at="2026-11-22T10:00:01Z",
+            measurements={"water_level_m": 2.5},
+            quality={"water_level_m": "valid", "timestamp_source": "network_server"},
+        )
+    )
+
+    # Comando executado NO PRAZO (10:00:10 <= expires_at 10:00:30), porém sincronizado 1h depois (updated_at > expires_at) (§9.3)
+    cmd_ok = Command(
+        command_id="CMD-ONTIME-LATESYNC",
+        tenant_id="C1",
+        site_id="S1",
+        device_id="PUMP-1",
+        operation="start_pump",
+        requested_by="op",
+        issued_at="2026-11-22T10:00:00+00:00",
+        expires_at="2026-11-22T10:00:30+00:00",
+        configuration_version=1,
+        state=CommandState.DISPATCHED.value,
+    )
+    store.save_command(cmd_ok, edge_id="E1")
+    store.persist_event(
+        CanonicalEvent(
+            event_id="cmdres:CMD-ONTIME-LATESYNC:verified",
+            tenant_id="C1",
+            site_id="S1",
+            device_id="PUMP-1",
+            event_type="command_result",
+            observed_at="2026-11-22T10:00:10+00:00",  # executado 20s ANTES de expirar!
+            received_at="2026-11-22T11:00:00+00:00",  # sincronizado 1h depois
+            quality={"timestamp_source": "edge"},
+            attributes={"command_id": "CMD-ONTIME-LATESYNC", "state": "VERIFIED", "reason": "ok"},
+        )
+    )
+
+    rep = build_poc_report_from_store(
+        store,
+        "C1",
+        expected_messages_per_node=1,
+        started_at="2026-11-22T00:00:00Z",
+        finished_at="2026-11-22T23:59:59Z",
+    )
+    # §9.1: apenas o evento dentro da janela foi contado (1, não 2)
+    n1 = next(n for n in rep["nodes"] if n["device_id"] == "N-NOMFG-1")
+    assert n1["received_messages"] == 1
+    # §9.2: nenhum fabricante físico verificado -> 0 (não 2!) e listados em unverified_nodes
+    assert rep["summary"]["independent_node_manufacturers"] == 0
+    assert set(rep["unverified_nodes"]) == {"N-NOMFG-1", "N-NOMFG-2"}
+    assert rep["criteria_status"]["INTEROPERABILITY"] == "NOT_TESTED"
+    # §9.3: comando executado no prazo e sincronizado tarde NÃO conta como violação de expiração
+    assert rep["summary"]["expired_commands_executed"] == 0

@@ -29,6 +29,7 @@ def main() -> None:
     )
     mqtt_host = os.environ.get("TERRANET_MQTT_HOST", "")
     mqtt_port = int(os.environ.get("TERRANET_MQTT_PORT", "1883"))
+    metrics_host = os.environ.get("TERRANET_EDGE_METRICS_HOST", "127.0.0.1")
     metrics_port = int(os.environ.get("TERRANET_EDGE_METRICS_PORT", "9101"))
     sync_interval = float(os.environ.get("TERRANET_SYNC_INTERVAL_S", "5"))
     chirpstack_prefix = os.environ.get("TERRANET_CHIRPSTACK_PREFIX", "")
@@ -58,8 +59,8 @@ def main() -> None:
     if mqtt_host:
         bus.connect()
     runtime.start_mqtt_subscriptions()
-    runtime.monitoring.start_http(host="0.0.0.0", port=metrics_port)  # noqa: S104
-    log.info("TERRANET EDGE '%s' iniciado (metrics :%s)", edge_id, metrics_port)
+    runtime.monitoring.start_http(host=metrics_host, port=metrics_port)
+    log.info("TERRANET EDGE '%s' iniciado (metrics %s:%s)", edge_id, metrics_host, metrics_port)
 
     running = True
 

@@ -45,7 +45,7 @@ def build_app():
 def main() -> None:
     import uvicorn
 
-    host = os.environ.get("TERRANET_CORE_HOST", "0.0.0.0")  # noqa: S104
+    host = os.environ.get("TERRANET_CORE_HOST", "127.0.0.1")
     port = int(os.environ.get("TERRANET_CORE_PORT", "8000"))
     uvicorn.run(build_app(), host=host, port=port)
 
