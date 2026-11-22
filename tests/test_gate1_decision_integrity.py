@@ -17,6 +17,7 @@ from contracts.devices import Device
 from core.poc_report import (
     MANDATORY_CRITERIA,
     build_poc_report_from_store,
+    decide_go_nogo,
     decide_go_nogo_tristate,
 )
 from core.storage.repository import CoreStore
@@ -173,3 +174,77 @@ def test_security_criteria_require_primary_command_and_audit_evidence(tmp_path):
     assert rep3["summary"]["interlock_violations"] == 1
     assert rep3["criteria_status"]["INTERLOCKS"] == "FAIL"
     assert rep3["decision"] == "NO-GO"
+
+
+def test_legacy_go_cannot_approve_empty_or_partial_evidence():
+    """Ressalva 1: função legada decide_go_nogo() não pode aprovar dicionário vazio ou parcial."""
+    assert decide_go_nogo({}) != "GO"
+    assert decide_go_nogo({"SYNC": True}) != "GO"
+    assert decide_go_nogo({k: True for k in MANDATORY_CRITERIA}) == "GO"
+
+
+def test_executed_command_without_auth_or_physical_timestamp_cannot_approve(tmp_path):
+    """Ressalva 2: comando executado sem vínculo de autorização ou sem command_result impede PASS."""
+    store = CoreStore.open(f"sqlite:///{(tmp_path / 'core.db').as_posix()}")
+    store.create_tenant("C1", "Fazenda")
+    store.create_site("S1", "C1", "Sede")
+    store.register_edge("E1", "C1", ["S1"])
+    store.devices.register(
+        Device.from_profile(
+            {
+                "device_id": "PUMP-1",
+                "tenant_id": "C1",
+                "site_id": "S1",
+                "category": "NODE-C",
+                "manufacturer": "CLPReal",
+                "model": "P1",
+                "communication": {"type": "modbus", "identifier": "plc-1"},
+                "adapter": {"name": "modbus_plc"},
+                "operational_status": "ACTIVE",
+            }
+        )
+    )
+
+    # Registra bloqueios negativos (rejeição + expiração)
+    store.audit("C1", "viewer", "command:issue:start_pump", "PUMP-1", "rejected", {"reason": "forbidden"})
+    exp_cmd = Command(
+        command_id="CMD-EXP-1",
+        tenant_id="C1",
+        site_id="S1",
+        device_id="PUMP-1",
+        operation="start_pump",
+        requested_by="op",
+        issued_at="2026-11-22T12:00:00+00:00",
+        expires_at="2026-11-22T12:00:30+00:00",
+        configuration_version=1,
+        state=CommandState.EXPIRED.value,
+    )
+    store.save_command(exp_cmd, edge_id="E1")
+
+    # Comando marcado VERIFIED mas SEM auditoria de autorização e SEM command_result (sem timestamp físico!)
+    unlinked = Command(
+        command_id="CMD-UNLINKED",
+        tenant_id="C1",
+        site_id="S1",
+        device_id="PUMP-1",
+        operation="start_pump",
+        requested_by="op",
+        issued_at="2026-11-22T12:01:00+00:00",
+        expires_at="2026-11-22T12:01:30+00:00",
+        configuration_version=1,
+        state=CommandState.VERIFIED.value,
+    )
+    store.save_command(unlinked, edge_id="E1")
+
+    rep1 = build_poc_report_from_store(store, "C1")
+    assert rep1["summary"]["unlinked_auth_executions"] == 1
+    assert rep1["summary"]["unlinked_exec_timestamps"] == 1
+    assert rep1["criteria_status"]["UNAUTHORIZED_COMMANDS"] == "NOT_TESTED"
+    assert rep1["criteria_status"]["EXPIRED_COMMANDS"] == "NOT_TESTED"
+
+    # Quando existe auditoria de autorização de outro comando, CMD-UNLINKED passa a ser FAIL (NO-GO)
+    store.audit("C1", "op", "command:issue:stop_pump", "PUMP-1", "authorized", {"command_id": "CMD-OTHER"})
+    rep2 = build_poc_report_from_store(store, "C1")
+    assert rep2["summary"]["unauthorized_commands_executed"] == 1
+    assert rep2["criteria_status"]["UNAUTHORIZED_COMMANDS"] == "FAIL"
+    assert rep2["decision"] == "NO-GO"

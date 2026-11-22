@@ -118,19 +118,9 @@ def evaluate_poc(nodes: list[NodeTest], system: SystemTest) -> dict[str, bool]:
 
 
 def decide_go_nogo(results: dict[str, bool]) -> str:
-    """Aplica os critérios formais da §25: GO, CONDITIONAL GO ou NO-GO."""
-    safety_and_integrity = (
-        "SYNC",
-        "EXPIRED_COMMANDS",
-        "UNAUTHORIZED_COMMANDS",
-        "INTERLOCKS",
-        "INTEROPERABILITY",
-    )
-    if any(results.get(k) is False for k in safety_and_integrity):
-        return "NO-GO"
-    if all(results.values()):
-        return "GO"
-    return "CONDITIONAL GO"
+    """Aplica critérios formais §25 exigindo matriz completa (delega para tri-estado)."""
+    mapped = {k: ("PASS" if bool(v) else "FAIL") for k, v in results.items()}
+    return decide_go_nogo_tristate(mapped)
 
 
 MANDATORY_SAFETY_CRITERIA = (
@@ -378,13 +368,20 @@ def build_poc_report_from_store(
 
     expired_executed = 0
     unauthorized_executed = 0
+    unlinked_auth_executions = 0
+    unlinked_exec_timestamps = 0
     for c in commands:
         if c["state"] not in ("EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED"):
             continue
         effective_ts = executed_at_by_cmd.get(c["command_id"])
-        if effective_ts is not None and parse_ts(effective_ts) > parse_ts(c["expires_at"]):
+        if effective_ts is None:
+            unlinked_exec_timestamps += 1
+        elif parse_ts(effective_ts) > parse_ts(c["expires_at"]):
             expired_executed += 1
-        if authorized_cmd_ids and c["command_id"] not in authorized_cmd_ids:
+
+        if not authorized_cmd_ids:
+            unlinked_auth_executions += 1
+        elif c["command_id"] not in authorized_cmd_ids:
             unauthorized_executed += 1
 
     # Vetos explícitos registrados em test_executions (um FAIL de QA sempre bloqueia PASS)
@@ -470,12 +467,20 @@ def build_poc_report_from_store(
     criteria_status["EXPIRED_COMMANDS"] = (
         "FAIL"
         if expired_executed > 0
-        else ("PASS" if expired_blocked_total > 0 else "NOT_TESTED")
+        else (
+            "NOT_TESTED"
+            if unlinked_exec_timestamps > 0
+            else ("PASS" if expired_blocked_total > 0 else "NOT_TESTED")
+        )
     )
     criteria_status["UNAUTHORIZED_COMMANDS"] = (
         "FAIL"
         if (unauthorized_executed > 0 or qa_unauth_fail)
-        else ("PASS" if unauthorized_blocked_total > 0 else "NOT_TESTED")
+        else (
+            "NOT_TESTED"
+            if unlinked_auth_executions > 0
+            else ("PASS" if unauthorized_blocked_total > 0 else "NOT_TESTED")
+        )
     )
     criteria_status["INTERLOCKS"] = (
         "FAIL"
@@ -518,6 +523,8 @@ def build_poc_report_from_store(
             "commands_expired_blocked": expired_blocked_total,
             "expired_commands_executed": expired_executed,
             "unauthorized_commands_executed": unauthorized_executed,
+            "unlinked_auth_executions": unlinked_auth_executions,
+            "unlinked_exec_timestamps": unlinked_exec_timestamps,
             "interlock_violations": interlock_violations,
             "track_positions": len(track_events),
             "track_delayed_offline_recovered": delayed_track,
