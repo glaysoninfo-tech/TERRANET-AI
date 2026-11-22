@@ -1,0 +1,17 @@
+{
+  "plan": "G1-H001",
+  "plan_version": "1.1",
+  "baseline_commit": "ad838f7",
+  "baseline_tag": "g1-s-baseline-ad838f7",
+  "ci_run_url": "https://github.com/glaysoninfo-tech/TERRANET-AI/actions/runs/45040790707",
+  "note": "Armazene vídeos, fotos, pcaps e logs brutos em storage privado externo (nunca em Git público) e registre aqui apenas metadados sanitizados e o hash SHA-256 de cada artefato.",
+  "trials": {
+    "G1-H01": { "title": "CLP físico via Modbus RTU / RS-485 (P01-A)", "status": "NOT_TESTED", "hardware": null, "artifacts": [] },
+    "G1-H02": { "title": "Rastreador comercial TRACK-B (Codec 8/8E + buffer offline)", "status": "NOT_TESTED", "hardware": null, "artifacts": [] },
+    "G1-H03": { "title": "EDGE ARM com RTC físico (>= 1h desligado + salto de relógio)", "status": "NOT_TESTED", "hardware": null, "artifacts": [] },
+    "G1-H04": { "title": "Falha física de energia + reconciliação edge_event_ids", "status": "NOT_TESTED", "hardware": null, "artifacts": [] },
+    "G1-H05": { "title": "Medição energética (Gateway/EDGE/LTE e NODE-S + sensor)", "status": "NOT_TESTED", "hardware": null, "artifacts": [] },
+    "G1-H06": { "title": "NODE-C comercial via LoRaWAN (P01-B — decisão independente)", "status": "NOT_TESTED", "hardware": null, "artifacts": [] },
+    "G1-H07": { "title": "Dois NODE-S LoRaWAN de fabricantes distintos (AU915 OTAA)", "status": "NOT_TESTED", "hardware": null, "artifacts": [] }
+  }
+}

@@ -16,4 +16,5 @@ data/
 .env
 deployments/**/secrets/*
 !deployments/**/secrets/.gitkeep
+evidence/**/raw/
 reports/
