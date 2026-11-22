@@ -141,7 +141,7 @@ class Device:
         source_type = comm.get("type", profile.get("source_type", ""))
         if source_type in ("lte", "gnss", "tracker_lte"):
             source_type = "tracker"
-        if source_type == "modbus_tcp":
+        if source_type in ("modbus_tcp", "modbus_rtu"):
             source_type = "modbus"
         identifier = (
             comm.get("dev_eui")

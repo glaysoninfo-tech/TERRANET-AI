@@ -22,6 +22,11 @@ from common.timeutil import now_iso, utc_now
 from contracts.canonical import CanonicalEvent, EventType, Quality, TimestampSource
 from contracts.commands import Command, CommandState, verify_command
 from contracts.devices import COMMAND_ACCEPTING
+from edge.adapters.lorawan.downlink import (
+    NODE_C_ADAPTER,
+    ChirpStackDownlinkClient,
+    NodeCBridgeAdapter,
+)
 from edge.adapters.modbus.adapter import ModbusAdapter
 from edge.adapters.modbus.client import ModbusClient
 from edge.storage.repository import EdgeStore
@@ -36,6 +41,8 @@ class CommandValidator:
         devices: DeviceStore,
         modbus_clients: dict[str, ModbusClient] | None = None,
         modbus_adapter: ModbusAdapter | None = None,
+        downlink_client: ChirpStackDownlinkClient | None = None,
+        node_c_adapter: NodeCBridgeAdapter | None = None,
     ):
         self.edge_id = edge_id
         self.edge_key = edge_key
@@ -43,6 +50,8 @@ class CommandValidator:
         self.devices = devices
         self.modbus_clients = modbus_clients if modbus_clients is not None else {}
         self.modbus_adapter = modbus_adapter or ModbusAdapter()
+        self.downlink_client = downlink_client
+        self.node_c_adapter = node_c_adapter or NODE_C_ADAPTER
 
     def attach_modbus_client(self, device_id: str, client: ModbusClient) -> None:
         self.modbus_clients[device_id] = client
@@ -115,6 +124,31 @@ class CommandValidator:
 
         # 6. Comando aceito localmente -> encaminhar ao adaptador industrial
         self._save(command, CommandState.ACCEPTED, "validated_by_edge")
+
+        # Caminho P01-B: EDGE -> LoRaWAN Downlink (ChirpStack Classe C) -> NODE-C -> Modbus RTU -> CLP
+        if device.source_type == "lorawan" and device.adapter_id == "lorawan_node_c":
+            if self.downlink_client is None:
+                return self._finish(command, CommandState.FAILED, "downlink_client_not_configured")
+            self._save(command, CommandState.DISPATCHED, "dispatching_via_lorawan_node_c")
+            st, reason = self.node_c_adapter.send_command(
+                command, device, self.downlink_client, now=now_dt
+            )
+            if st == CommandState.DISPATCHED:
+                current_row = self.get_command(command.command_id)
+                final_state = CommandState(current_row["state"]) if current_row else st
+                if final_state == CommandState.DISPATCHED:
+                    self._save(command, CommandState.DISPATCHED, reason)
+                self.store.audit(
+                    actor=command.requested_by,
+                    action=f"command:{command.operation}",
+                    target=command.device_id,
+                    outcome=st.value,
+                    details={"command_id": command.command_id, "reason": reason, "transport": "lorawan_node_c"},
+                )
+                return st, reason, None
+            return self._finish(command, st, reason)
+
+        # Caminho P01-A: EDGE -> Modbus TCP/RTU direto -> CLP
         if device.source_type != "modbus":
             return self._finish(
                 command,
@@ -132,6 +166,33 @@ class CommandValidator:
             outcome.reason,
             observed_state=outcome.observed_state,
             interlock_blocked=outcome.interlock_blocked,
+        )
+
+    def record_async_result(self, event: CanonicalEvent) -> None:
+        """Atualiza o estado local de comando assíncrono (ex.: uplink de confirmação NODE-C)."""
+        attrs = event.attributes or {}
+        cmd_id = attrs.get("command_id")
+        state = attrs.get("state")
+        reason = str(attrs.get("reason", ""))
+        if not cmd_id or not state:
+            return
+        row = self.get_command(str(cmd_id))
+        if row is None:
+            return
+        self.store.db.execute(
+            "UPDATE commands SET state = ?, reason = ?, updated_at = ? WHERE command_id = ?",
+            (str(state), reason[:500], now_iso(), str(cmd_id)),
+        )
+        self.store.audit(
+            actor="node_c",
+            action=f"command_result:{attrs.get('operation', 'unknown')}",
+            target=event.device_id,
+            outcome=str(state),
+            details={
+                "command_id": cmd_id,
+                "reason": reason,
+                "interlock_blocked": bool(attrs.get("interlock_blocked", False)),
+            },
         )
 
     def _save(self, command: Command, state: CommandState, reason: str) -> None:

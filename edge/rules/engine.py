@@ -219,6 +219,49 @@ class RulesEngine:
         new_active = was_active
         details: dict[str, Any] = {}
 
+        if rule.rule_type == "bands":
+            val = self._valid_measurement(event, p["measurement"])
+            if not isinstance(val, int | float) or isinstance(val, bool):
+                return None
+            levels = p["levels"]  # lista ordenada crescente de {"name", "min", "severity"?}
+            hyst = float(p.get("hysteresis", 0.0))
+            prev_band = str(state.get("band", "NORMAL"))
+            prev_idx = next((i for i, lv in enumerate(levels) if lv["name"] == prev_band), -1)
+
+            # Determina nova faixa considerando histerese somente para rebaixamento
+            new_idx = -1
+            for i, lv in enumerate(levels):
+                limit = float(lv["min"])
+                effective = limit - hyst if i <= prev_idx else limit
+                if float(val) >= effective:
+                    new_idx = i
+
+            new_band = levels[new_idx]["name"] if new_idx >= 0 else "NORMAL"
+            if new_band == prev_band:
+                return None
+            state["band"] = new_band
+            state["active"] = new_idx >= 0
+            state["last_change_at"] = event.observed_at
+            self.rules.set_state(rule.rule_id, event.device_id, state)
+            sev = levels[new_idx].get("severity", rule.severity) if new_idx >= 0 else "info"
+            return self._make_alarm(
+                rule=rule,
+                tenant_id=event.tenant_id,
+                site_id=event.site_id,
+                device_id=event.device_id,
+                observed_at=event.observed_at,
+                active=new_idx >= 0,
+                trigger_event_id=event.event_id,
+                details={
+                    "measurement": p["measurement"],
+                    "value": val,
+                    "previous_band": prev_band,
+                    "band": new_band,
+                },
+                severity_override=sev,
+                transition_override=new_band.lower(),
+            )
+
         if rule.rule_type == "threshold":
             val = self._valid_measurement(event, p["measurement"])
             if not isinstance(val, int | float) or isinstance(val, bool):
@@ -350,8 +393,10 @@ class RulesEngine:
         active: bool,
         trigger_event_id: str,
         details: dict[str, Any],
+        severity_override: str | None = None,
+        transition_override: str | None = None,
     ) -> CanonicalEvent:
-        transition = "raised" if active else "cleared"
+        transition = transition_override or ("raised" if active else "cleared")
         digest = hashlib.sha256(
             f"{rule.rule_id}|{rule.version}|{device_id}|{transition}|{trigger_event_id}".encode()
         ).hexdigest()[:20]
@@ -375,7 +420,7 @@ class RulesEngine:
                 "rule_id": rule.rule_id,
                 "rule_version": rule.version,
                 "rule_type": rule.rule_type,
-                "severity": rule.severity,
+                "severity": severity_override or rule.severity,
                 "alarm_status": transition,
                 "trigger_event_id": trigger_event_id,
                 "details": details,

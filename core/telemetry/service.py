@@ -17,15 +17,22 @@ from common.timeutil import now_iso
 from contracts.canonical import CanonicalEvent, ContractError
 from contracts.devices import TELEMETRY_ACCEPTING
 from core.identity.auth import EdgePrincipal
+from core.notifications.service import NotificationService
 from core.storage.repository import CoreStore
 from edge.adapters import AdapterError
 from edge.adapters.tracker.adapter import TrackerAdapter
 
 
 class TelemetryIngestionService:
-    def __init__(self, store: CoreStore, metrics: Registry | None = None):
+    def __init__(
+        self,
+        store: CoreStore,
+        metrics: Registry | None = None,
+        notifications: NotificationService | None = None,
+    ):
         self.store = store
         self.metrics = metrics or Registry()
+        self.notifications = notifications
         self.tracker_adapter = TrackerAdapter()
         self._m_ingested = self.metrics.counter("core_events_ingested_total", "Eventos novos persistidos")
         self._m_duplicates = self.metrics.counter("core_events_duplicate_total", "Eventos duplicados idempotentes")
@@ -97,6 +104,8 @@ class TelemetryIngestionService:
 
             if is_new:
                 self._m_ingested.inc(source="edge")
+                if self.notifications is not None:
+                    self.notifications.notify_event(event)
             else:
                 self._m_duplicates.inc(source="edge")
             # Eventos já recebidos são confirmados sem duplicação (§13.2)

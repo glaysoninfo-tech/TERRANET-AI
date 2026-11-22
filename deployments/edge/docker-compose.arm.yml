@@ -1,0 +1,55 @@
+# TERRANET EDGE — Perfil ARM de Baixo Consumo (<= 5 W) para POC-001 (Gate 1 / §10.1)
+#
+# Objetivo energético: manter Gateway LoRaWAN + EDGE ARM + Roteador LTE <= 15 W médios
+# para viabilizar autonomia >= 48 h com bateria LiFePO4 12,8 V / 100 Ah e painel 300 Wp.
+#
+# Diferenças frente ao compose padrão:
+# * TERRANET EDGE usa SQLite WAL em volume persistente (elimina 1 instância dedicada de PG)
+# * Limites de memória/CPU para evitar picos de consumo
+# * Suporte a adaptador RS-485 USB (/dev/ttyUSB0) para Modbus RTU direto ao CLP
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
+      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      - edge_arm_mqtt:/mosquitto/data
+
+  terranet-edge:
+    build:
+      context: ../..
+      dockerfile: deployments/edge/Dockerfile
+    restart: unless-stopped
+    mem_limit: 192m
+    depends_on:
+      - mosquitto
+    environment:
+      TERRANET_EDGE_ID: ${TERRANET_EDGE_ID:-EDGE-001}
+      TERRANET_EDGE_DB_URL: sqlite:////data/edge.db
+      TERRANET_MQTT_HOST: mosquitto
+      TERRANET_MQTT_PORT: "1883"
+      TERRANET_MQTT_USER: terranet_edge
+      TERRANET_MQTT_PASSWORD: ${EDGE_MQTT_PASSWORD:?defina EDGE_MQTT_PASSWORD}
+      TERRANET_CORE_URL: ${TERRANET_CORE_URL:-}
+      TERRANET_EDGE_TOKEN: ${TERRANET_EDGE_TOKEN:-}
+      TERRANET_MASTER_KEY: ${TERRANET_MASTER_KEY:?defina TERRANET_MASTER_KEY}
+      TERRANET_SYNC_INTERVAL_S: "10"
+      TERRANET_CONFIG_POLL_S: "60"
+      TERRANET_EDGE_METRICS_PORT: "9101"
+    volumes:
+      - edge_arm_data:/data
+    # Descomente quando o conversor USB-RS485 estiver conectado ao EDGE ARM:
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    ports:
+      - "127.0.0.1:9101:9101"
+
+volumes:
+  edge_arm_mqtt:
+  edge_arm_data:

@@ -16,20 +16,22 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
 from common.device_store import DeviceStore
 from common.metrics import Registry
-from common.timeutil import now_iso
-from contracts.canonical import CanonicalEvent
+from common.timeutil import now_iso, utc_now
+from contracts.canonical import CanonicalEvent, EventType
 from contracts.commands import Command, CommandState
 from contracts.devices import TELEMETRY_ACCEPTING, Device
 from contracts.rules import Rule
 from contracts.topics import chirpstack_subscription, parse_chirpstack_topic
 from edge.adapters import AdapterError, adapter_for_source, get_adapter
+from edge.adapters.lorawan.downlink import ChirpStackDownlinkClient
 from edge.adapters.modbus.adapter import ModbusAdapter
-from edge.adapters.modbus.client import ModbusClient
+from edge.adapters.modbus.client import ModbusClient, create_modbus_client
 from edge.commands.validator import CommandValidator
 from edge.monitoring.agent import MonitoringAgent
 from edge.mqtt.bus import InMemoryBus, MessageBus
@@ -60,8 +62,10 @@ class EdgeRuntime:
         self.rule_store = RuleStore(self.store.db)
         self.rules = RulesEngine(self.store, self.devices, self.rule_store)
         self.bus = bus or InMemoryBus()
+        self.downlink = ChirpStackDownlinkClient(self.bus, prefix=chirpstack_prefix)
         self.modbus_adapter = ModbusAdapter()
         self.modbus_clients: dict[str, ModbusClient] = {}
+        self._last_modbus_poll: dict[str, float] = {}
         self.commands = CommandValidator(
             edge_id=edge_id,
             edge_key=edge_key,
@@ -69,6 +73,7 @@ class EdgeRuntime:
             devices=self.devices,
             modbus_clients=self.modbus_clients,
             modbus_adapter=self.modbus_adapter,
+            downlink_client=self.downlink,
         )
         self.monitoring = MonitoringAgent(
             edge_id=edge_id,
@@ -158,6 +163,15 @@ class EdgeRuntime:
 
         self.devices.touch(event.device_id, event.observed_at)
         self.monitoring.device_messages.inc(device_id=event.device_id, event_type=event.event_type)
+        if event.event_type == EventType.COMMAND_RESULT:
+            self.commands.record_async_result(event)
+            attrs = event.attributes or {}
+            if attrs.get("state"):
+                self.monitoring.commands_total.inc(
+                    state=str(attrs["state"]), operation=str(attrs.get("operation", "unknown"))
+                )
+            if attrs.get("interlock_blocked"):
+                self.monitoring.interlock_blocks.inc(device_id=event.device_id)
         self._publish_safe(event)
 
         # Regras locais determinísticas (§15)
@@ -195,6 +209,52 @@ class EdgeRuntime:
 
     def attach_modbus_client(self, device_id: str, client: ModbusClient) -> None:
         self.modbus_clients[device_id] = client
+
+    def poll_all_modbus(self, now_mono: float | None = None) -> list[CanonicalEvent]:
+        """Executa o agendador de polling Modbus (TCP ou RTU/RS-485) dos dispositivos ativos."""
+        ts_mono = time.monotonic() if now_mono is None else now_mono
+        emitted: list[CanonicalEvent] = []
+        for dev in self.devices.list(source_type="modbus"):
+            if dev.operational_status not in TELEMETRY_ACCEPTING:
+                continue
+            interval = float(dev.metadata.get("poll_interval_s", 15.0))
+            last = self._last_modbus_poll.get(dev.device_id)
+            if last is not None and (ts_mono - last) < interval:
+                continue
+            if dev.device_id not in self.modbus_clients:
+                comm = dev.communication_profile or {}
+                if comm.get("host") or comm.get("serial_port"):
+                    try:
+                        self.modbus_clients[dev.device_id] = create_modbus_client(comm)
+                    except Exception as exc:  # noqa: BLE001
+                        self.monitoring.adapter_errors.inc(source="modbus_connect")
+                        self.store.dead_letter("modbus_connect", str(exc), dev.device_id, comm)
+                        self._last_modbus_poll[dev.device_id] = ts_mono
+                        continue
+                else:
+                    continue
+            self._last_modbus_poll[dev.device_id] = ts_mono
+            ev = self.poll_modbus(dev.device_id)
+            if ev is not None:
+                emitted.append(ev)
+        return emitted
+
+    @staticmethod
+    def clock_healthy(min_year: int = 2025) -> bool:
+        """Verifica se o RTC/NTP do EDGE não voltou para data de fábrica (1970/2020)."""
+        return utc_now().year >= min_year
+
+    def sync_config_if_needed(self) -> dict[str, Any] | None:
+        """Busca intenção de configuração no CORE e aplica somente se a versão avançou (§20)."""
+        if self.sync is None:
+            return None
+        cfg = self.sync.pull_config()
+        if not cfg:
+            return None
+        intended = int(cfg.get("version", 0))
+        if intended <= self.applied_config_version:
+            return None
+        return self.apply_config_intention(cfg)
 
     def check_no_data_rules(self, now: datetime | None = None) -> list[CanonicalEvent]:
         alarms = self.rules.evaluate_no_data(now=now)

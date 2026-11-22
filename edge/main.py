@@ -71,10 +71,19 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
 
     try:
+        config_interval = float(os.environ.get("TERRANET_CONFIG_POLL_S", "60"))
+        last_config_poll = 0.0
         while running:
+            if not runtime.clock_healthy():
+                log.error("Relógio do sistema inválido (RTC/NTP); comandos remotos suspensos")
+            runtime.poll_all_modbus()
             if runtime.sync is not None:
                 runtime.sync_now()
-                runtime.poll_and_execute_commands()
+                if runtime.clock_healthy():
+                    runtime.poll_and_execute_commands()
+                if (time.monotonic() - last_config_poll) >= config_interval:
+                    runtime.sync_config_if_needed()
+                    last_config_poll = time.monotonic()
                 snapshot = runtime.monitoring.collect(wan_connected=runtime.sync.wan_connected)
                 runtime.sync.send_heartbeat(snapshot)
             runtime.check_no_data_rules()

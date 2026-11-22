@@ -1,0 +1,15 @@
+# Proxy reverso HTTPS / TLS para o TERRANET CORE (PIT-001 §13.3, POC-001 Gate 1)
+# Em produção, substitua {$TERRANET_DOMAIN:localhost} pelo domínio público (TLS automático Let's Encrypt).
+# Para mTLS com certificados por EDGE, adicione client_auth dentro do bloco tls.
+
+{$TERRANET_DOMAIN:localhost} {
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+
+    reverse_proxy terranet-core:8000
+}

@@ -28,8 +28,55 @@ services:
       TERRANET_CORE_DB_URL: postgresql://${CORE_PG_USER:-terranet_core}:${CORE_PG_PASSWORD:?defina CORE_PG_PASSWORD}@postgis:5432/${CORE_PG_DB:-terranet_core}
       TERRANET_MASTER_KEY: ${TERRANET_MASTER_KEY:?defina TERRANET_MASTER_KEY}
       TERRANET_RATE_LIMIT_RPM: ${TERRANET_RATE_LIMIT_RPM:-300}
+      TERRANET_TRACK_WEBHOOK_TOKEN: ${TERRANET_TRACK_WEBHOOK_TOKEN:-}
+      TERRANET_TELEGRAM_BOT_TOKEN: ${TERRANET_TELEGRAM_BOT_TOKEN:-}
+      TERRANET_TELEGRAM_CHAT_ID: ${TERRANET_TELEGRAM_CHAT_ID:-}
+      TERRANET_ALERT_WEBHOOK_URL: ${TERRANET_ALERT_WEBHOOK_URL:-}
     ports:
       - "127.0.0.1:8000:8000"
+
+  track-gateway:
+    build:
+      context: ../..
+      dockerfile: deployments/cloud/Dockerfile
+    command: ["terranet-track-gateway"]
+    restart: unless-stopped
+    depends_on:
+      postgis:
+        condition: service_healthy
+    environment:
+      TERRANET_CORE_DB_URL: postgresql://${CORE_PG_USER:-terranet_core}:${CORE_PG_PASSWORD:?defina CORE_PG_PASSWORD}@postgis:5432/${CORE_PG_DB:-terranet_core}
+      TERRANET_TRACK_PORT: "5027"
+    ports:
+      - "5027:5027"
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    depends_on:
+      - terranet-core
+    environment:
+      TERRANET_DOMAIN: ${TERRANET_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # Opcional (docker compose --profile traccar up -d) para rastreadores de outros fabricantes
+  # além de Teltonika Codec 8/8E (Suntech, Queclink, Maxtrack, etc.) encaminhando ao webhook.
+  traccar:
+    image: traccar/traccar:latest
+    profiles: ["traccar"]
+    restart: unless-stopped
+    depends_on:
+      - terranet-core
+    ports:
+      - "5000-5050:5000-5050"
+      - "127.0.0.1:8082:8082"
 
   prometheus:
     image: prom/prometheus:v2.55.0
@@ -57,3 +104,5 @@ volumes:
   core_pg_data:
   core_prom_data:
   core_grafana_data:
+  caddy_data:
+  caddy_config:

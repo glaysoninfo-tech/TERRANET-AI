@@ -38,6 +38,8 @@ terranet-edge = "edge.main:main"
 terranet-core = "core.main:main"
 terranet-core-admin = "core.cli:main"
 terranet-demo-ui = "core.demo_server:main"
+terranet-track-gateway = "core.track_gateway.tcp_server:main"
+terranet-poc-report = "core.poc_report:main"
 
 [tool.setuptools.packages.find]
 include = ["common*", "contracts*", "edge*", "core*"]

@@ -76,10 +76,15 @@ def kind_for_event(event_type: str) -> TopicKind:
 
 # ChirpStack v4: application/{application_id}/device/{dev_eui}/event/{event}
 CHIRPSTACK_EVENT_TOPIC = "application/{application_id}/device/{dev_eui}/event/{event}"
+CHIRPSTACK_COMMAND_TOPIC = "application/{application_id}/device/{dev_eui}/command/{command}"
 
 
 def chirpstack_subscription(prefix: str = "") -> str:
     return f"{prefix}application/+/device/+/event/+"
+
+
+def chirpstack_downlink_topic(application_id: str, dev_eui: str, prefix: str = "") -> str:
+    return f"{prefix}application/{application_id}/device/{dev_eui.lower()}/command/down"
 
 
 def parse_chirpstack_topic(topic: str, prefix: str = "") -> dict[str, str] | None:

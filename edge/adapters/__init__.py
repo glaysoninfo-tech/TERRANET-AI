@@ -81,6 +81,6 @@ def available_adapters() -> list[str]:
 
 def _load_builtin() -> None:
     # Importação tardia evita ciclos e registra os adaptadores embarcados.
-    from edge.adapters.lorawan import chirpstack  # noqa: F401
+    from edge.adapters.lorawan import chirpstack, downlink  # noqa: F401
     from edge.adapters.modbus import adapter as _modbus  # noqa: F401
     from edge.adapters.tracker import adapter as _tracker  # noqa: F401

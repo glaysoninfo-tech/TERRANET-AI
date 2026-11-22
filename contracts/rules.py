@@ -8,7 +8,7 @@ from typing import Any
 from contracts.canonical import is_valid_measurement_name
 
 RULE_TYPES = frozenset(
-    {"threshold", "trend", "persistence", "combination", "state", "no_data", "battery"}
+    {"threshold", "bands", "trend", "persistence", "combination", "state", "no_data", "battery"}
 )
 OPERATORS = frozenset({">", ">=", "<", "<="})
 SEVERITIES = frozenset({"info", "warning", "critical"})
@@ -85,6 +85,21 @@ class Rule:
                 self._number(p, "hysteresis", 0)
             if self.rule_type == "persistence":
                 self._number(p, "duration_s", 1)
+        elif self.rule_type == "bands":
+            self._measurement(p)
+            levels = p.get("levels")
+            if not isinstance(levels, list) or len(levels) < 1:
+                raise RuleValidationError("bands exige lista 'levels' não vazia")
+            prev = float("-inf")
+            for item in levels:
+                if not isinstance(item, dict) or not item.get("name"):
+                    raise RuleValidationError("cada faixa em levels exige 'name' e 'min'")
+                self._number(item, "min")
+                if float(item["min"]) <= prev:
+                    raise RuleValidationError("levels deve estar em ordem estritamente crescente")
+                prev = float(item["min"])
+            if "hysteresis" in p:
+                self._number(p, "hysteresis", 0)
         elif self.rule_type == "battery":
             self._measurement(p)
             self._number(p, "min")

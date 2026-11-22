@@ -91,6 +91,101 @@ class PyModbusClient(ModbusClient):
             self._client.close()
 
 
+class PyModbusRtuClient(ModbusClient):
+    """Cliente Modbus RTU sobre serial RS-485 (inversores, medidores e CLPs rurais)."""
+
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = 9600,
+        parity: str = "N",
+        stopbits: int = 1,
+        bytesize: int = 8,
+        timeout: float = 2.0,
+    ):
+        try:
+            from pymodbus.client import ModbusSerialClient
+        except ImportError as exc:
+            raise ImportError(
+                "Instale a dependência opcional 'edge' (pymodbus>=3.6) para Modbus RTU/RS-485"
+            ) from exc
+        self._port = port
+        self._client = ModbusSerialClient(
+            port=port,
+            baudrate=baudrate,
+            parity=parity,
+            stopbits=stopbits,
+            bytesize=bytesize,
+            timeout=timeout,
+        )
+        self._lock = threading.Lock()
+
+    def _ensure_connected(self) -> None:
+        if not self._client.connected and not self._client.connect():
+            raise ModbusTransportError(f"Não foi possível abrir porta RS-485 {self._port}")
+
+    def read_holding_registers(self, address: int, count: int, unit_id: int = 1) -> list[int]:
+        with self._lock:
+            self._ensure_connected()
+            resp = self._client.read_holding_registers(address=address, count=count, slave=unit_id)
+            if resp.isError():
+                raise ModbusTransportError(f"Erro Modbus RTU na leitura de registradores: {resp}")
+            return list(resp.registers)
+
+    def read_coils(self, address: int, count: int, unit_id: int = 1) -> list[bool]:
+        with self._lock:
+            self._ensure_connected()
+            resp = self._client.read_coils(address=address, count=count, slave=unit_id)
+            if resp.isError():
+                raise ModbusTransportError(f"Erro Modbus RTU na leitura de bobinas: {resp}")
+            return list(resp.bits[:count])
+
+    def write_coil(self, address: int, value: bool, unit_id: int = 1) -> bool:
+        with self._lock:
+            self._ensure_connected()
+            resp = self._client.write_coil(address=address, value=value, slave=unit_id)
+            if resp.isError():
+                raise ModbusTransportError(f"Erro Modbus RTU na escrita de bobina: {resp}")
+            return True
+
+    def write_register(self, address: int, value: int, unit_id: int = 1) -> bool:
+        with self._lock:
+            self._ensure_connected()
+            resp = self._client.write_register(address=address, value=value, slave=unit_id)
+            if resp.isError():
+                raise ModbusTransportError(f"Erro Modbus RTU na escrita de registrador: {resp}")
+            return True
+
+    def close(self) -> None:
+        with self._lock:
+            self._client.close()
+
+
+def create_modbus_client(comm_profile: dict) -> ModbusClient:
+    """Fábrica de cliente Modbus TCP ou RTU (RS-485) a partir do perfil de comunicação."""
+    kind = str(comm_profile.get("type", "modbus_tcp")).lower()
+    if kind == "modbus_rtu" or comm_profile.get("serial_port"):
+        port = comm_profile.get("serial_port") or comm_profile.get("port")
+        if not port:
+            raise ValueError("Perfil Modbus RTU exige 'serial_port' (ex.: /dev/ttyUSB0)")
+        return PyModbusRtuClient(
+            port=str(port),
+            baudrate=int(comm_profile.get("baudrate", 9600)),
+            parity=str(comm_profile.get("parity", "N")),
+            stopbits=int(comm_profile.get("stopbits", 1)),
+            bytesize=int(comm_profile.get("bytesize", 8)),
+            timeout=float(comm_profile.get("timeout", 2.0)),
+        )
+    host = comm_profile.get("host")
+    if not host:
+        raise ValueError("Perfil Modbus TCP exige 'host'")
+    return PyModbusClient(
+        host=str(host),
+        port=int(comm_profile.get("port", 502)),
+        timeout=float(comm_profile.get("timeout", 3.0)),
+    )
+
+
 @dataclass
 class SimulatedPumpPLC(ModbusClient):
     """CLP simulado em bancada para a aplicação P01 (bomba supervisionada).

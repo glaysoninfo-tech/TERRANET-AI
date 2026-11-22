@@ -27,6 +27,8 @@ from core.identity.auth import (
     IdentityService,
     UserPrincipal,
 )
+from core.notifications.service import NotificationService
+from core.poc_report import build_poc_report_from_store
 from core.storage.repository import CoreStore
 from core.telemetry.service import TelemetryIngestionService
 
@@ -79,6 +81,8 @@ def create_app(
     store: CoreStore,
     master_key: bytes | str,
     rate_limit_rpm: int = 300,
+    notifications: NotificationService | None = None,
+    track_webhook_token: str | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="TERRANET CORE API",
@@ -89,7 +93,7 @@ def create_app(
     metrics = Registry()
     identity = IdentityService(store)
     devices_svc = DeviceManagementService(store)
-    telemetry_svc = TelemetryIngestionService(store, metrics=metrics)
+    telemetry_svc = TelemetryIngestionService(store, metrics=metrics, notifications=notifications)
     commands_svc = CommandManagementService(store, master_key=master_key)
     geo_svc = GeospatialService(store)
     analytics_svc = AnalyticsService(store)
@@ -148,6 +152,27 @@ def create_app(
         user.require_role("operator")
         try:
             return telemetry_svc.ingest_track_packet(payload, tenant_id=user.tenant_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/ingest/track/webhook")
+    def ingest_track_webhook(
+        payload: dict[str, Any],
+        x_track_token: str | None = Header(default=None, alias="X-Track-Webhook-Token"),
+    ) -> dict[str, Any]:
+        """Webhook para encaminhadores externos (ex.: Traccar) autenticado por token dedicado."""
+        import hmac
+
+        if not track_webhook_token or not x_track_token or not hmac.compare_digest(
+            x_track_token, track_webhook_token
+        ):
+            raise HTTPException(status_code=401, detail="Token de webhook TRACK inválido")
+        try:
+            return telemetry_svc.ingest_track_packet(payload, tenant_id=None)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except LookupError as exc:
@@ -444,6 +469,24 @@ def create_app(
             row["last_metrics"] = loads(row["last_metrics"]) or {}
             row["online"] = store.is_edge_online(row["edge_id"])
         return rows
+
+    # ---------------------------------------------------- Relatório POC-001
+    @app.get("/api/v1/poc/report")
+    def poc_report(
+        expected_messages: int = Query(default=672, ge=1, le=100_000),
+        offline_hours: float = Query(default=0.0, ge=0.0),
+        gateway_autonomy_hours: float = Query(default=0.0, ge=0.0),
+        node_autonomy_hours: float = Query(default=0.0, ge=0.0),
+        user: UserPrincipal = Depends(current_user),
+    ) -> dict[str, Any]:
+        return build_poc_report_from_store(
+            store=store,
+            tenant_id=user.tenant_id,
+            expected_messages_per_node=expected_messages,
+            offline_hours=offline_hours,
+            gateway_autonomy_hours=gateway_autonomy_hours,
+            node_autonomy_hours=node_autonomy_hours,
+        )
 
     # --------------------------------------------------------- IHC Web (UI)
     web_dir = Path(__file__).resolve().parent.parent / "web"
