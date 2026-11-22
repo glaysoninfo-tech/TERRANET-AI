@@ -5,9 +5,12 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from common.device_store import DeviceNotFound, LifecycleError
@@ -423,5 +426,32 @@ def create_app(
         user: UserPrincipal = Depends(current_user),
     ) -> list[dict[str, Any]]:
         return store.list_audit(user.tenant_id, action=action, limit=limit)
+
+    @app.get("/api/v1/edges")
+    def list_edges(
+        user: UserPrincipal = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        rows = store.db.query(
+            "SELECT edge_id, tenant_id, site_ids, status, config_version, "
+            "applied_config_version, last_heartbeat_at, last_metrics, created_at "
+            "FROM edges WHERE tenant_id = ? ORDER BY edge_id",
+            (user.tenant_id,),
+        )
+        from common.db import loads
+
+        for row in rows:
+            row["site_ids"] = loads(row["site_ids"]) or []
+            row["last_metrics"] = loads(row["last_metrics"]) or {}
+            row["online"] = store.is_edge_online(row["edge_id"])
+        return rows
+
+    # --------------------------------------------------------- IHC Web (UI)
+    web_dir = Path(__file__).resolve().parent.parent / "web"
+    if web_dir.is_dir():
+        app.mount("/ui", StaticFiles(directory=str(web_dir), html=True), name="ui")
+
+        @app.get("/", include_in_schema=False)
+        def ui_root() -> FileResponse:
+            return FileResponse(str(web_dir / "index.html"))
 
     return app

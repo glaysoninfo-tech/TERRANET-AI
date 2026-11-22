@@ -37,6 +37,7 @@ dev = [
 terranet-edge = "edge.main:main"
 terranet-core = "core.main:main"
 terranet-core-admin = "core.cli:main"
+terranet-demo-ui = "core.demo_server:main"
 
 [tool.setuptools.packages.find]
 include = ["common*", "contracts*", "edge*", "core*"]
@@ -44,7 +45,7 @@ include = ["common*", "contracts*", "edge*", "core*"]
 [tool.setuptools.package-data]
 contracts = ["schemas/*.json"]
 edge = ["storage/migrations/*.sql"]
-core = ["storage/migrations/*.sql"]
+core = ["storage/migrations/*.sql", "web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["contracts/tests", "edge/tests", "core/tests", "tests"]

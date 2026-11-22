@@ -53,7 +53,14 @@ python demo/pit_demo.py
 pytest -v
 ```
 
-### 4. Executar o TERRANET CORE localmente
+### 4. Executar a IHC Web local (modo bancada interativa)
+
+```bash
+python -m core.demo_server
+# Abra http://127.0.0.1:8000 no navegador (OpenAPI em /docs e Prometheus em /metrics)
+```
+
+### 5. Executar o TERRANET CORE isoladamente
 
 ```bash
 # Bootstrap inicial de cliente, instalação, usuário operador e EDGE
@@ -66,7 +73,7 @@ python -m core.cli register-edge EDGE-001 CLIENTE-001 FAZENDA-001
 python -m core.main
 ```
 
-### 5. Contêineres Docker (E10)
+### 6. Contêineres Docker (E10)
 
 ```bash
 # Demo isolada (§17.2)

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TERRANET AI · IHC Operacional (PIT-001)</title>
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">TN</div>
+      <div>
+        <div class="brand-title">TERRANET AI <span class="badge badge-info">PIT-001 v1.0</span></div>
+        <div class="brand-sub">Supervisão CORE · Autonomia EDGE · MVP H01 / P01 / V01</div>
+      </div>
+    </div>
+
+    <div class="topbar-controls">
+      <div class="pill" id="wan-pill">
+        <span class="dot dot-ok" id="wan-dot"></span>
+        <span id="wan-label">WAN Online</span>
+      </div>
+      <div class="pill" id="outbox-pill" title="Eventos pendentes no Transactional Outbox do EDGE">
+        Outbox: <strong id="outbox-count">0</strong>
+      </div>
+      <label class="profile-select-wrap">
+        <span>Sessão:</span>
+        <select id="profile-select" aria-label="Selecionar cliente e função"></select>
+      </label>
+      <a class="btn btn-ghost btn-sm" href="/docs" target="_blank" rel="noopener">OpenAPI</a>
+      <a class="btn btn-ghost btn-sm" href="/metrics" target="_blank" rel="noopener">/metrics</a>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="overview">Painel Operacional (H01 · P01 · V01)</button>
+    <button class="tab" data-tab="edge">EDGE · Outbox · Resiliência</button>
+    <button class="tab" data-tab="registry">Dispositivos · Comandos · Auditoria</button>
+  </nav>
+
+  <main class="container">
+    <!-- KPI Strip -->
+    <section class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Cliente Ativo (Isolamento)</div>
+        <div class="kpi-value" id="kpi-tenant">—</div>
+        <div class="kpi-sub" id="kpi-role">—</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Dispositivos Visíveis</div>
+        <div class="kpi-value" id="kpi-devices">0</div>
+        <div class="kpi-sub" id="kpi-devices-sub">Device Registry</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">H01 · Nível do Rio</div>
+        <div class="kpi-value" id="kpi-level">—</div>
+        <div class="kpi-sub" id="kpi-level-sub">Regra cheia &gt; 4,0 m (hist. 0,3 m)</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">P01 · Estado da Bomba</div>
+        <div class="kpi-value" id="kpi-pump">—</div>
+        <div class="kpi-sub" id="kpi-pump-sub">Intertravamentos CLP</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Eventos CORE / EDGE</div>
+        <div class="kpi-value" id="kpi-events">0 / 0</div>
+        <div class="kpi-sub" id="kpi-outbox-sub">0 pendentes no Outbox</div>
+      </div>
+    </section>
+
+    <!-- TAB 1: PAINEL OPERACIONAL -->
+    <section id="tab-overview" class="tab-panel active">
+      <div class="grid-2">
+        <!-- H01 HIDROLOGIA -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h2>H01 · Monitoramento de Nível de Rio (LoRaWAN)</h2>
+              <p class="muted">Dois fabricantes (JSON cm e Binário mm) normalizados para o mesmo modelo canônico</p>
+            </div>
+            <span class="badge" id="h01-alarm-badge">NORMAL</span>
+          </div>
+
+          <div class="chart-box" id="h01-chart"></div>
+
+          <div class="metrics-row" id="h01-metrics"></div>
+
+          <div class="divider"></div>
+          <div class="sim-box">
+            <div class="sim-title">Simulador de Uplink ChirpStack (Bancada)</div>
+            <div class="form-row">
+              <label>
+                Fabricante
+                <select id="h01-mfg">
+                  <option value="alfa">Fabricante Alfa (JSON cm)</option>
+                  <option value="beta">Fabricante Beta (Binário mm)</option>
+                </select>
+              </label>
+              <label class="grow">
+                Nível (<strong id="h01-slider-val">2.85 m</strong>)
+                <input type="range" id="h01-slider" min="0.5" max="6.0" step="0.05" value="2.85" />
+              </label>
+              <button class="btn btn-primary" id="btn-send-uplink">Enviar Uplink</button>
+              <button class="btn btn-secondary" id="btn-send-dup" title="PIT-T04: reenvia o último deduplicationId">Reenviar Duplicado</button>
+            </div>
+          </div>
+        </article>
+
+        <!-- P01 BOMBA MODBUS -->
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h2>P01 · Controle Supervisionado de Bomba (Modbus)</h2>
+              <p class="muted">Comandos assinados (HMAC por EDGE) com TTL e intertravamentos físicos no CLP</p>
+            </div>
+            <span class="badge" id="p01-state-badge">PARADA</span>
+          </div>
+
+          <div class="metrics-row" id="p01-metrics"></div>
+
+          <div class="interlock-panel">
+            <div class="sim-title">Intertravamentos Físicos no CLP (Bancada · PIT-T12)</div>
+            <div class="interlock-grid">
+              <label class="toggle-chip">
+                <input type="checkbox" id="il-dryrun" checked />
+                <span>Água na sucção (OK)</span>
+              </label>
+              <label class="toggle-chip">
+                <input type="checkbox" id="il-remote" checked />
+                <span>Seletor Modo Remoto</span>
+              </label>
+              <label class="toggle-chip toggle-danger">
+                <input type="checkbox" id="il-overload" />
+                <span>Falha Sobrecarga</span>
+              </label>
+              <label class="toggle-chip toggle-danger">
+                <input type="checkbox" id="il-estop" />
+                <span>Botão Emergência</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="sim-box">
+            <div class="sim-title">Painel de Comando Supervisionado (§14)</div>
+            <div class="form-row">
+              <label>
+                TTL (s)
+                <input type="number" id="p01-ttl" value="30" min="5" max="600" class="input-sm" />
+              </label>
+              <button class="btn btn-success" id="btn-start-pump">Ligar Bomba</button>
+              <button class="btn btn-danger" id="btn-stop-pump">Desligar Bomba</button>
+              <button class="btn btn-warning" id="btn-expired-cmd" title="PIT-T11: entrega comando já vencido ao EDGE">Simular Expirado</button>
+            </div>
+            <div class="cmd-feedback" id="p01-cmd-feedback"></div>
+          </div>
+        </article>
+      </div>
+
+      <!-- V01 RASTREAMENTO -->
+      <article class="card mt-16">
+        <div class="card-header">
+          <div>
+            <h2>V01 · Rastreamento Veicular (GNSS / LTE · Fluxo Direto CORE)</h2>
+            <p class="muted">Ingestão direta via TRACK Adapter sem dependência de Gateway EDGE fixo (§3)</p>
+          </div>
+          <button class="btn btn-primary" id="btn-track-step">Avançar Posição GNSS</button>
+        </div>
+        <div class="grid-geo">
+          <div class="geo-map" id="v01-map"></div>
+          <div class="geo-side">
+            <div class="metrics-col" id="v01-metrics"></div>
+            <div class="table-wrap compact">
+              <table>
+                <thead>
+                  <tr><th>Hora (UTC)</th><th>Latitude</th><th>Longitude</th><th>Vel.</th></tr>
+                </thead>
+                <tbody id="v01-history"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- TAB 2: EDGE & OUTBOX -->
+    <section id="tab-edge" class="tab-panel">
+      <div class="grid-2">
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h2>Simulação de Conectividade e Transactional Outbox (§12)</h2>
+              <p class="muted">Teste operação offline (PIT-T06), fila local (PIT-T05) e perda de ACK pós-commit (PIT-T08)</p>
+            </div>
+            <span class="badge" id="edge-status-badge">ONLINE</span>
+          </div>
+
+          <div class="action-bar">
+            <button class="btn btn-danger" id="btn-wan-off">Simular Queda de Internet</button>
+            <button class="btn btn-success" id="btn-wan-on">Restabelecer Internet</button>
+            <button class="btn btn-primary" id="btn-sync-now">Sincronizar Outbox</button>
+            <button class="btn btn-warning" id="btn-sync-drop" title="Grava no CORE mas derruba a conexão antes do ACK do EDGE">Sync com Queda Pós-Commit</button>
+          </div>
+
+          <div class="metrics-row mt-12" id="outbox-metrics"></div>
+
+          <div class="info-callout mt-12">
+            <strong>Como validar PIT-T06 / PIT-T08 nesta tela:</strong>
+            <ol>
+              <li>Clique em <em>Simular Queda de Internet</em> e envie novos uplinks H01 (inclusive &gt; 4,0 m para ver o alarme local ser gerado offline).</li>
+              <li>Observe o contador <strong>PENDING</strong> subir sem perda de dados.</li>
+              <li>Restabeleça a internet e clique em <em>Sync com Queda Pós-Commit</em>: os eventos aparecem no CORE mas continuam pendentes no EDGE.</li>
+              <li>Clique em <em>Sincronizar Outbox</em>: a retransmissão é 100% idempotente (zero duplicações) e zera as pendências.</li>
+            </ol>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h2>Últimos Eventos Canônicos no CORE</h2>
+              <p class="muted">Telemetria, posições, alarmes do Rules Engine e resultados de comando</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="btn-refresh-events">Atualizar</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Event ID</th><th>Dispositivo</th><th>Tipo</th><th>Dados</th><th>Observado</th></tr>
+              </thead>
+              <tbody id="core-events-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- TAB 3: DEVICE REGISTRY, COMANDOS E AUDITORIA -->
+    <section id="tab-registry" class="tab-panel">
+      <article class="card">
+        <div class="card-header">
+          <div>
+            <h2>Device Registry &amp; Ciclo de Vida (§7–§8)</h2>
+            <p class="muted">A lista reflete estritamente o isolamento do cliente selecionado na barra superior (PIT-T15)</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Device ID</th>
+                <th>Instalação</th>
+                <th>Categoria</th>
+                <th>Fabricante / Modelo</th>
+                <th>Adaptador</th>
+                <th>Status</th>
+                <th>Última Com.</th>
+                <th>Ação</th>
+              </tr>
+            </thead>
+            <tbody id="devices-body"></tbody>
+          </table>
+        </div>
+      </article>
+
+      <div class="grid-2 mt-16">
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h2>Histórico de Comandos (§14.3)</h2>
+              <p class="muted">Máquina de estados com rastreabilidade por correlação</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Alvo</th><th>Operação</th><th>Solicitante</th><th>Estado</th><th>Motivo</th></tr>
+              </thead>
+              <tbody id="commands-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div>
+              <h2>Log de Auditoria (PIT-T14)</h2>
+              <p class="muted">Registro imutável de cadastros, transições, comandos e configurações</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Hora</th><th>Ator</th><th>Ação</th><th>Alvo</th><th>Resultado</th></tr>
+              </thead>
+              <tbody id="audit-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-stack" id="toast-stack"></div>
+  <script src="/ui/app.js"></script>
+</body>
+</html>
