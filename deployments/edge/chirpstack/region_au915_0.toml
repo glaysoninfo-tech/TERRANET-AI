@@ -1,5 +1,5 @@
 # Região AU915 (Brasil — ANATEL), canais 0-7 + 64 (AUD-001 G1-R01)
-[regions]
+[[regions]]
   id = "au915_0"
   description = "AU915 (Brasil, canais 0-7)"
   common_name = "AU915"
