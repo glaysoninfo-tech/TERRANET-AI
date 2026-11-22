@@ -504,6 +504,7 @@ def create_app(
         offline_hours: float = Query(default=0.0, ge=0.0),
         gateway_autonomy_hours: float = Query(default=0.0, ge=0.0),
         node_autonomy_hours: float = Query(default=0.0, ge=0.0),
+        persisted_edge_events: int | None = Query(default=None, ge=0),
         started_at: str | None = Query(default=None),
         finished_at: str | None = Query(default=None),
         user: UserPrincipal = Depends(current_user),
@@ -516,6 +517,7 @@ def create_app(
                 offline_hours=offline_hours,
                 gateway_autonomy_hours=gateway_autonomy_hours,
                 node_autonomy_hours=node_autonomy_hours,
+                persisted_edge_events=persisted_edge_events,
                 started_at=started_at,
                 finished_at=finished_at,
             )

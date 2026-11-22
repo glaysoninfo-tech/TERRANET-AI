@@ -420,9 +420,16 @@ def test_aud001_no_false_go_when_untested_and_in_transit_expiry(tmp_path):
         headers=hdr,
     )
     assert r_exec.status_code == 201
+    # G1-S Problema C: registro de QA isolado sem evidência primária de comando permanece NOT_TESTED
     rep2 = client.get("/api/v1/poc/report", headers=hdr).json()
-    assert rep2["criteria_status"]["UNAUTHORIZED_COMMANDS"] == "PASS"
-    assert rep2["decision"] == "NOT_READY"  # ainda faltam outros critérios obrigatórios
+    assert rep2["criteria_status"]["UNAUTHORIZED_COMMANDS"] == "NOT_TESTED"
+    assert rep2["summary"]["recorded_test_executions"] == 1
+
+    # Com evidência primária de rejeição de comando, o critério passa (decisão segue NOT_READY)
+    store.audit("C1", "viewer", "command:issue:start_pump", "PUMP-1", "rejected", {"reason": "forbidden"})
+    rep3 = client.get("/api/v1/poc/report", headers=hdr).json()
+    assert rep3["criteria_status"]["UNAUTHORIZED_COMMANDS"] == "PASS"
+    assert rep3["decision"] == "NOT_READY"
 
     # AUD-001 §6.1: comando com TTL 10s mas atraso de trânsito de 15s no rádio expira no NODE-C
     edge_key = derive_edge_key("master", "EDGE-001")

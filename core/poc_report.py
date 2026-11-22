@@ -133,19 +133,49 @@ def decide_go_nogo(results: dict[str, bool]) -> str:
     return "CONDITIONAL GO"
 
 
-def decide_go_nogo_tristate(criteria_status: dict[str, str]) -> str:
-    """Decisão auditável (AUD-001 §7): impede falsa aprovação quando há itens NOT_TESTED."""
-    safety_and_integrity = (
-        "SYNC",
-        "EXPIRED_COMMANDS",
-        "UNAUTHORIZED_COMMANDS",
-        "INTERLOCKS",
-        "INTEROPERABILITY",
-    )
-    if any(criteria_status.get(k) == "FAIL" for k in safety_and_integrity):
+MANDATORY_SAFETY_CRITERIA = (
+    "SYNC",
+    "EXPIRED_COMMANDS",
+    "UNAUTHORIZED_COMMANDS",
+    "INTERLOCKS",
+    "INTEROPERABILITY",
+)
+MANDATORY_CRITERIA = (
+    *MANDATORY_SAFETY_CRITERIA,
+    "EDGE_OFFLINE",
+    "GATEWAY_ENERGY",
+    "NODE_ENERGY",
+    "APPLICATIONS",
+)
+VALID_CRITERIA_STATES = frozenset({"PASS", "FAIL", "NOT_TESTED"})
+
+
+def decide_go_nogo_tristate(
+    criteria_status: dict[str, str],
+    required_criteria: tuple[str, ...] = MANDATORY_CRITERIA,
+) -> str:
+    """Decisão auditável (G1-S / AUD-002): exige matriz completa antes de autorizar GO.
+
+    * Qualquer critério de segurança/integridade em FAIL -> NO-GO.
+    * Conjunto vazio, critério obrigatório ausente ou qualquer NOT_TESTED -> NOT_READY.
+    * GO somente quando TODOS os critérios obrigatórios e reportados estiverem em PASS.
+    """
+    if not isinstance(criteria_status, dict):
+        raise ValueError("criteria_status deve ser um dicionário")
+    for name, state in criteria_status.items():
+        if state not in VALID_CRITERIA_STATES:
+            raise ValueError(f"Estado inválido para critério {name}: {state!r}")
+
+    if any(criteria_status.get(k) == "FAIL" for k in MANDATORY_SAFETY_CRITERIA):
         return "NO-GO"
-    if any(v == "NOT_TESTED" for v in criteria_status.values()):
+
+    if not criteria_status:
         return "NOT_READY"
+
+    missing = [k for k in required_criteria if k not in criteria_status]
+    if missing or any(v == "NOT_TESTED" for v in criteria_status.values()):
+        return "NOT_READY"
+
     if all(v == "PASS" for v in criteria_status.values()):
         return "GO"
     return "CONDITIONAL GO"
@@ -166,17 +196,20 @@ def build_poc_report_from_store(
     gateway_autonomy_hours: float = 0.0,
     node_autonomy_hours: float = 0.0,
     persisted_edge_events: int | None = None,
+    edge_event_ids: set[str] | list[str] | None = None,
     started_at: str | None = None,
     finished_at: str | None = None,
 ) -> dict[str, Any]:
     """Gera o relatório POC-E16 a partir dos registros reais do TERRANET CORE.
 
-    Correções AUD-002 (§9.1–9.3):
-    * Janela temporal explícita (`started_at` / `finished_at`) para evitar contaminação
-      por eventos anteriores ao ensaio.
+    Garantias de integridade (AUD-002 / G1-S):
+    * Janela temporal explícita (`started_at` / `finished_at`).
     * Interoperabilidade exige `manufacturer` físico verificável (sem fallback por decoder).
-    * Expiração de comandos avalia o timestamp efetivo da execução física (`command_result.observed_at`),
-      não `commands.updated_at`.
+    * Sincronização exige evidência independente do EDGE (`persisted_edge_events` ou
+      `edge_event_ids`); sem fonte independente do EDGE, `SYNC` fica `NOT_TESTED`.
+    * Indicadores de segurança (`EXPIRED_COMMANDS`, `UNAUTHORIZED_COMMANDS`, `INTERLOCKS`)
+      são derivados das evidências primárias (comandos, `command_result` e `audit_log` de
+      comando), nunca de inferências genéricas.
     """
     from common.timeutil import normalize_iso, parse_ts
 
@@ -266,14 +299,34 @@ def build_poc_report_from_store(
         if c["state"] in ("REJECTED", "PLC_REJECTED") and "interlock" in (c.get("reason") or "")
     )
 
-    audit_rejected = int(
+    audit_cmd_rejected = int(
         store.db.scalar(
-            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? AND outcome = 'rejected' "
+            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? "
+            "AND action LIKE 'command:%' AND outcome = 'rejected' "
             "AND at >= ? AND at <= ?",
             (tenant_id, win_start, win_end),
         )
         or 0
     )
+    authorized_cmd_ids = {
+        str((loads(r["details"]) or {}).get("command_id"))
+        for r in store.db.query(
+            "SELECT details FROM audit_log WHERE tenant_id = ? "
+            "AND action LIKE 'command:issue:%' AND outcome = 'authorized' "
+            "AND at >= ? AND at <= ?",
+            (tenant_id, win_start, win_end),
+        )
+    }
+    unauthorized_cmd_rejected = sum(
+        1
+        for c in commands
+        if c["state"] in ("REJECTED", "PLC_REJECTED")
+        and any(
+            tok in (c.get("reason") or "")
+            for tok in ("invalid_signature", "operation_not_allowed", "tenant_or_site_mismatch")
+        )
+    )
+    unauthorized_blocked_total = audit_cmd_rejected + unauthorized_cmd_rejected
 
     # Evidências registradas formalmente na tabela test_executions (na janela do ensaio)
     executions = store.db.query(
@@ -285,34 +338,61 @@ def build_poc_report_from_store(
     for ex in executions:
         latest_by_code.setdefault(ex["test_code"], ex)
 
-    # AUD-002 §9.3: avalia expiração pelo instante efetivo de execução/confirmação (command_result.observed_at)
+    # Evidências primárias de command_result (execução real, intertravamento e assinatura)
     cmd_res_rows = store.db.query(
         "SELECT observed_at, payload FROM telemetry_events WHERE tenant_id = ? "
         "AND event_type = 'command_result' AND observed_at >= ? AND observed_at <= ?",
         (tenant_id, win_start, win_end),
     )
     executed_at_by_cmd: dict[str, str] = {}
+    interlock_blocked_events = 0
+    interlock_violations = 0
+    expired_result_events = 0
     for row in cmd_res_rows:
         payload = loads(row["payload"]) or {}
         attrs = payload.get("attributes") or {}
         cid = attrs.get("command_id")
         st = attrs.get("state")
+        if st == "EXPIRED":
+            expired_result_events += 1
+        if st in ("REJECTED", "PLC_REJECTED") and (
+            attrs.get("interlock_blocked") is True or "interlock" in str(attrs.get("reason", ""))
+        ):
+            interlock_blocked_events += 1
         if cid and st in ("EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED"):
             executed_at_by_cmd[str(cid)] = str(payload.get("observed_at") or row["observed_at"])
+            obs = attrs.get("observed_state") or {}
+            interlock_tripped = (
+                obs.get("dry_run_ok_state") is False
+                or obs.get("emergency_stop_state") is True
+                or obs.get("overload_fault_state") is True
+                or obs.get("loto_locked_state") is True
+                or obs.get("remote_mode_state") is False
+            )
+            if attrs.get("interlock_blocked") is True or (
+                attrs.get("operation") == "start_pump"
+                and obs.get("pump_running_state") is True
+                and interlock_tripped
+            ):
+                interlock_violations += 1
 
     expired_executed = 0
+    unauthorized_executed = 0
     for c in commands:
         if c["state"] not in ("EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED"):
             continue
         effective_ts = executed_at_by_cmd.get(c["command_id"])
         if effective_ts is not None and parse_ts(effective_ts) > parse_ts(c["expires_at"]):
             expired_executed += 1
+        if authorized_cmd_ids and c["command_id"] not in authorized_cmd_ids:
+            unauthorized_executed += 1
 
-    unauthorized_executed = sum(
-        1 for ex in executions if ex["test_code"] in ("POC-T09", "PIT-T10") and ex["status"] == "FAIL"
+    # Vetos explícitos registrados em test_executions (um FAIL de QA sempre bloqueia PASS)
+    qa_unauth_fail = any(
+        ex["test_code"] in ("POC-T09", "PIT-T10") and ex["status"] == "FAIL" for ex in executions
     )
-    interlock_violations = sum(
-        1 for ex in executions if ex["test_code"] in ("POC-T10", "PIT-T12") and ex["status"] == "FAIL"
+    qa_interlock_fail = any(
+        ex["test_code"] in ("POC-T10", "PIT-T12") and ex["status"] == "FAIL" for ex in executions
     )
 
     # Posições e registros atrasados de TRACK na janela do ensaio (POC-T11 / POC-T12)
@@ -338,15 +418,31 @@ def build_poc_report_from_store(
     if track_devices and len(track_events) > 0:
         apps += 1  # V01
 
-    core_total = int(
-        store.db.scalar(
-            "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = ? "
-            "AND observed_at >= ? AND observed_at <= ?",
-            (tenant_id, win_start, win_end),
-        )
-        or 0
+    core_event_rows = store.db.query(
+        "SELECT event_id FROM telemetry_events WHERE tenant_id = ? "
+        "AND observed_at >= ? AND observed_at <= ?",
+        (tenant_id, win_start, win_end),
     )
-    persisted = core_total if persisted_edge_events is None else persisted_edge_events
+    core_event_ids = {str(r["event_id"]) for r in core_event_rows}
+    core_total = len(core_event_ids)
+
+    # G1-S Problema B: SYNC exige evidência independente do EDGE (jamais compara CORE com CORE)
+    sync_missing_in_core = 0
+    if edge_event_ids is not None:
+        edge_set = {str(e) for e in edge_event_ids}
+        sync_missing_in_core = len(edge_set - core_event_ids)
+        sync_status = "NOT_TESTED" if not edge_set else ("PASS" if sync_missing_in_core == 0 else "FAIL")
+        sync_evidence_source = "independent_edge_event_ids"
+    elif persisted_edge_events is not None:
+        sync_status = (
+            "NOT_TESTED"
+            if persisted_edge_events == 0
+            else ("PASS" if core_total >= persisted_edge_events and core_total == persisted_edge_events else "FAIL")
+        )
+        sync_evidence_source = "independent_edge_counter"
+    else:
+        sync_status = "NOT_TESTED"
+        sync_evidence_source = "missing_independent_edge_source"
 
     # Avaliação tri-estado (PASS / FAIL / NOT_TESTED) — impede falsa aprovação!
     criteria_status: dict[str, str] = {}
@@ -364,28 +460,27 @@ def build_poc_report_from_store(
             return "NOT_TESTED"
         return "PASS" if value >= threshold else "FAIL"
 
+    expired_blocked_total = max(expired_rejected, expired_result_events)
+    interlock_blocked_total = max(interlock_blocked, interlock_blocked_events)
+
     criteria_status["EDGE_OFFLINE"] = _field_metric(offline_hours, 24.0, "POC-T05")
     criteria_status["GATEWAY_ENERGY"] = _field_metric(gateway_autonomy_hours, 48.0, "POC-T13-GW")
     criteria_status["NODE_ENERGY"] = _field_metric(node_autonomy_hours, 72.0, "POC-T13-NODE")
-    criteria_status["SYNC"] = (
-        "NOT_TESTED"
-        if persisted == 0 and core_total == 0
-        else ("PASS" if persisted > 0 and core_total == persisted else "FAIL")
-    )
+    criteria_status["SYNC"] = sync_status
     criteria_status["EXPIRED_COMMANDS"] = (
         "FAIL"
         if expired_executed > 0
-        else ("PASS" if expired_rejected > 0 or (latest_by_code.get("PIT-T11") or {}).get("status") == "PASS" else "NOT_TESTED")
+        else ("PASS" if expired_blocked_total > 0 else "NOT_TESTED")
     )
     criteria_status["UNAUTHORIZED_COMMANDS"] = (
         "FAIL"
-        if unauthorized_executed > 0
-        else ("PASS" if audit_rejected > 0 or (latest_by_code.get("POC-T09") or {}).get("status") == "PASS" else "NOT_TESTED")
+        if (unauthorized_executed > 0 or qa_unauth_fail)
+        else ("PASS" if unauthorized_blocked_total > 0 else "NOT_TESTED")
     )
     criteria_status["INTERLOCKS"] = (
         "FAIL"
-        if interlock_violations > 0
-        else ("PASS" if interlock_blocked > 0 or (latest_by_code.get("POC-T10") or {}).get("status") == "PASS" else "NOT_TESTED")
+        if (interlock_violations > 0 or qa_interlock_fail)
+        else ("PASS" if interlock_blocked_total > 0 else "NOT_TESTED")
     )
     criteria_status["APPLICATIONS"] = "PASS" if apps >= 3 else ("NOT_TESTED" if apps == 0 else "FAIL")
     criteria_status["INTEROPERABILITY"] = (
@@ -415,11 +510,15 @@ def build_poc_report_from_store(
             "independent_node_manufacturers": len(manufacturers),
             "applications_validated": apps,
             "core_events": core_total,
+            "sync_evidence_source": sync_evidence_source,
+            "sync_missing_in_core": sync_missing_in_core,
             "commands_total": len(commands),
             "commands_verified": verified_commands,
             "commands_rejected": rejected_commands,
-            "commands_expired_blocked": expired_rejected,
+            "commands_expired_blocked": expired_blocked_total,
             "expired_commands_executed": expired_executed,
+            "unauthorized_commands_executed": unauthorized_executed,
+            "interlock_violations": interlock_violations,
             "track_positions": len(track_events),
             "track_delayed_offline_recovered": delayed_track,
             "track_can_j1939_events": can_events,
@@ -427,10 +526,14 @@ def build_poc_report_from_store(
             "recorded_test_executions": len(executions),
         },
         "negative_security_tests": {
-            "expired_blocked_evidence": expired_rejected,
-            "interlock_blocked_evidence": interlock_blocked,
-            "audit_rejected_evidence": audit_rejected,
-            "verified": (expired_rejected > 0 and (interlock_blocked > 0 or audit_rejected > 0)),
+            "expired_blocked_evidence": expired_blocked_total,
+            "interlock_blocked_evidence": interlock_blocked_total,
+            "unauthorized_command_blocked_evidence": unauthorized_blocked_total,
+            "verified": (
+                expired_blocked_total > 0
+                and interlock_blocked_total > 0
+                and unauthorized_blocked_total > 0
+            ),
         },
         "field_measurements": {
             "offline_hours": offline_hours,
@@ -476,11 +579,14 @@ def main() -> None:
 
 
 __all__ = [
+    "MANDATORY_CRITERIA",
+    "MANDATORY_SAFETY_CRITERIA",
     "EnergyGate",
     "NodeTest",
     "SystemTest",
     "build_poc_report_from_store",
     "decide_go_nogo",
+    "decide_go_nogo_tristate",
     "evaluate_energy_gate",
     "evaluate_poc",
     "loads",
