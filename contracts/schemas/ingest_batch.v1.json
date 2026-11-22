@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/ingest_batch/1.0",
+  "title": "EDGE -> CORE ingest batch (POST /api/v1/ingest/batches)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["edge_id", "batch_id", "events"],
+  "properties": {
+    "edge_id": { "type": "string" },
+    "batch_id": { "type": "string" },
+    "sent_at": { "type": "string", "format": "date-time" },
+    "events": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "https://terranet.ai/contracts/telemetry_event/1.0" }
+    }
+  },
+  "$defs": {
+    "response": {
+      "$id": "https://terranet.ai/contracts/ingest_response/1.0",
+      "type": "object",
+      "required": ["batch_id", "accepted", "rejected", "retryable"],
+      "properties": {
+        "batch_id": { "type": "string" },
+        "accepted": {
+          "description": "Eventos efetivamente persistidos (inclui duplicados já existentes)",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rejected": {
+          "description": "Erros permanentes: não retransmitir; encaminhar para análise",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["event_id", "reason"],
+            "properties": { "event_id": { "type": ["string", "null"] }, "reason": { "type": "string" } }
+          }
+        },
+        "retryable": {
+          "description": "Erros temporários: retransmitir posteriormente",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

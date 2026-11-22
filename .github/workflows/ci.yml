@@ -1,0 +1,39 @@
+name: TERRANET CI (PIT-001 §28.1)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static-analysis-and-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependências
+        run: pip install -e ".[edge,core,dev]"
+      - name: Análise estática (ruff)
+        run: ruff check common contracts edge core tests
+      - name: Testes unitários, integração e aceitação (PIT-T01..T15)
+        run: pytest -v
+      - name: Validação do exemplo de referência (§16)
+        run: python demo/pit_demo.py
+      - name: Verificação de segurança (bandit)
+        run: bandit -r common contracts edge core -ll
+
+  docker-build:
+    needs: static-analysis-and-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build imagem demo (§17.2)
+        run: |
+          docker build -t terranet-pit-demo ./demo
+          docker run --rm --network none --read-only terranet-pit-demo
+      - name: Build imagem TERRANET EDGE
+        run: docker build -f deployments/edge/Dockerfile -t terranet-edge:ci .
+      - name: Build imagem TERRANET CORE
+        run: docker build -f deployments/cloud/Dockerfile -t terranet-core:ci .

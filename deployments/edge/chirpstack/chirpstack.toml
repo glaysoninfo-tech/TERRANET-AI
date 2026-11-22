@@ -1,0 +1,26 @@
+# Configuração base do ChirpStack v4 para o Brasil — região AU915 sub-banda 0 (§17.3)
+[logging]
+  level = "info"
+
+[postgresql]
+  dsn = "postgres://terranet_edge:CHANGE_ME@postgres/chirpstack?sslmode=disable"
+
+[redis]
+  servers = ["redis://redis/"]
+
+[network]
+  net_id = "000000"
+  enabled_regions = ["au915_0"]
+
+[api]
+  bind = "0.0.0.0:8080"
+  secret = "REPLACE_WITH_32_BYTE_RANDOM_SECRET"
+
+[integration]
+  enabled = ["mqtt"]
+
+  [integration.mqtt]
+    server = "tcp://mosquitto:1883/"
+    json = true
+    event_topic = "application/{{application_id}}/device/{{dev_eui}}/event/{{event}}"
+    command_topic = "application/{{application_id}}/device/{{dev_eui}}/command/{{command}}"

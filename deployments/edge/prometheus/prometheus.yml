@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: terranet_edge
+    static_configs:
+      - targets: ["terranet-edge:9101"]

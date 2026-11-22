@@ -1,0 +1,59 @@
+# TERRANET CORE — Stack central (PostgreSQL/PostGIS, API modular, Prometheus, Grafana)
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CORE_PG_USER:-terranet_core}
+      POSTGRES_PASSWORD: ${CORE_PG_PASSWORD:?defina CORE_PG_PASSWORD}
+      POSTGRES_DB: ${CORE_PG_DB:-terranet_core}
+    volumes:
+      - core_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CORE_PG_USER:-terranet_core}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  terranet-core:
+    build:
+      context: ../..
+      dockerfile: deployments/cloud/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgis:
+        condition: service_healthy
+    environment:
+      TERRANET_CORE_DB_URL: postgresql://${CORE_PG_USER:-terranet_core}:${CORE_PG_PASSWORD:?defina CORE_PG_PASSWORD}@postgis:5432/${CORE_PG_DB:-terranet_core}
+      TERRANET_MASTER_KEY: ${TERRANET_MASTER_KEY:?defina TERRANET_MASTER_KEY}
+      TERRANET_RATE_LIMIT_RPM: ${TERRANET_RATE_LIMIT_RPM:-300}
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - core_prom_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?defina GRAFANA_ADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - core_grafana_data:/var/lib/grafana
+
+volumes:
+  core_pg_data:
+  core_prom_data:
+  core_grafana_data:

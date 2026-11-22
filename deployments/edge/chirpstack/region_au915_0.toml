@@ -1,0 +1,24 @@
+# Região AU915 (Brasil — ANATEL), canais 0-7 + 64
+[regions]
+  id = "au915_0"
+  description = "AU915 (Brasil, canais 0-7)"
+  common_name = "AU915"
+
+  [regions.gateway]
+    force_gws_private = false
+
+    [regions.gateway.backend]
+      enabled = "mqtt"
+
+      [regions.gateway.backend.mqtt]
+        topic_prefix = "au915_0"
+        server = "tcp://mosquitto:1883"
+
+  [regions.network]
+    installation_margin = 10
+    rx_window = 0
+    rx1_delay = 1
+    rx1_dr_offset = 0
+    rx2_dr = 8
+    rx2_frequency = 923300000
+    enabled_uplink_channels = [0, 1, 2, 3, 4, 5, 6, 7, 64]

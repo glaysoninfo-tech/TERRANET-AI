@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/command/1.0",
+  "title": "TERRANET physical command (PIT-001 §14.2)",
+  "type": "object",
+  "required": [
+    "command_id",
+    "tenant_id",
+    "site_id",
+    "device_id",
+    "operation",
+    "requested_by",
+    "issued_at",
+    "expires_at",
+    "configuration_version",
+    "confirmation_policy",
+    "correlation_id",
+    "signature"
+  ],
+  "properties": {
+    "command_id": { "type": "string" },
+    "tenant_id": { "type": "string" },
+    "site_id": { "type": "string" },
+    "device_id": { "type": "string" },
+    "operation": { "type": "string" },
+    "params": { "type": "object" },
+    "requested_by": { "type": "string" },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time", "description": "TTL entre 5 e 600 s" },
+    "expected_state": { "type": "object", "description": "Estado atual exigido para execução" },
+    "configuration_version": { "type": "integer", "minimum": 1 },
+    "confirmation_policy": { "enum": ["feedback", "none"] },
+    "correlation_id": { "type": "string" },
+    "state": {
+      "enum": ["CREATED", "AUTHORIZED", "DISPATCHED", "RECEIVED", "ACCEPTED", "EXECUTED",
+               "VERIFIED", "REJECTED", "EXPIRED", "FAILED", "UNKNOWN"]
+    },
+    "signature": { "type": "string", "description": "HMAC-SHA256 com chave derivada por EDGE" }
+  }
+}

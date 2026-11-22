@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/device_profile/1.0",
+  "title": "TERRANET device profile (PIT-001 §7.2) - sem chaves criptográficas",
+  "type": "object",
+  "required": ["device_id", "tenant_id", "site_id", "category", "communication", "adapter"],
+  "properties": {
+    "device_id": { "type": "string" },
+    "tenant_id": { "type": "string" },
+    "site_id": { "type": "string" },
+    "category": { "enum": ["NODE", "NODE-S", "NODE-C", "TRACK", "TRACK-B", "GATEWAY"] },
+    "manufacturer": { "type": "string" },
+    "model": { "type": "string" },
+    "hardware_version": { "type": "string" },
+    "firmware_version": { "type": "string" },
+    "communication": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["lorawan", "modbus", "modbus_tcp", "tracker", "lte"] },
+        "dev_eui": { "type": "string", "pattern": "^[0-9A-Fa-f]{16}$" },
+        "imei": { "type": "string" },
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "unit_id": { "type": "integer" }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["app_key"] },
+          { "required": ["nwk_key"] },
+          { "required": ["password"] }
+        ]
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "required": ["name"],
+      "properties": { "name": { "type": "string" }, "version": { "type": "string" } }
+    },
+    "capabilities": { "type": "array", "items": { "type": "string" } },
+    "configuration_version": { "type": "integer", "minimum": 1 },
+    "operational_status": {
+      "enum": ["IDENTIFIED", "REGISTERED", "PROVISIONED", "ACTIVE", "DEGRADED", "OFFLINE",
+               "MAINTENANCE", "DECOMMISSIONED"]
+    },
+    "metadata": {
+      "type": "object",
+      "description": "decoder, field_map, ranges, suspect_ranges, expected_interval_s, allowed_operations, register_map"
+    }
+  }
+}

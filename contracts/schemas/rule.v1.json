@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/rule/1.0",
+  "title": "TERRANET automation rule (PIT-001 §15)",
+  "type": "object",
+  "required": ["rule_id", "version", "rule_type", "params", "device_ids"],
+  "properties": {
+    "rule_id": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "rule_type": {
+      "enum": ["threshold", "trend", "persistence", "combination", "state", "no_data", "battery"]
+    },
+    "params": { "type": "object" },
+    "device_ids": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "enabled": { "type": "boolean" },
+    "author": { "type": "string" },
+    "approved_at": { "type": "string", "format": "date-time" },
+    "severity": { "enum": ["info", "warning", "critical"] },
+    "safety_critical": {
+      "type": "boolean",
+      "description": "Regras de segurança física não são alteradas remotamente"
+    },
+    "description": { "type": "string" }
+  }
+}

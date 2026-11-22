@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terranet"
+version = "0.1.0"
+description = "TERRANET AI - PIT-001: plataforma EDGE/CORE de integração tecnológica"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = []
+
+[project.optional-dependencies]
+edge = [
+    "paho-mqtt>=2.0",
+    "httpx>=0.27",
+    "psycopg[binary]>=3.1",
+    "pymodbus>=3.6",
+]
+core = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "psycopg[binary]>=3.1",
+    "httpx>=0.27",
+]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+    "ruff>=0.4",
+    "bandit>=1.7",
+    "pip-audit>=2.7",
+]
+
+[project.scripts]
+terranet-edge = "edge.main:main"
+terranet-core = "core.main:main"
+terranet-core-admin = "core.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["common*", "contracts*", "edge*", "core*"]
+
+[tool.setuptools.package-data]
+contracts = ["schemas/*.json"]
+edge = ["storage/migrations/*.sql"]
+core = ["storage/migrations/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["contracts/tests", "edge/tests", "core/tests", "tests"]
+addopts = "-q"
+markers = [
+    "postgres: testes de integração que exigem PostgreSQL (TERRANET_TEST_PG_URL)",
+    "mqtt: testes de integração que exigem broker MQTT (TERRANET_TEST_MQTT_HOST)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["S101", "S311", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S", "B"]
+"tests/**" = ["S", "B"]
+"demo/**" = ["S", "UP"]

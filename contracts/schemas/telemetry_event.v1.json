@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://terranet.ai/contracts/telemetry_event/1.0",
+  "title": "TERRANET canonical event envelope",
+  "description": "Envelope canônico (PIT-001 §9.1). Alterações incompatíveis exigem nova versão.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "tenant_id",
+    "site_id",
+    "device_id",
+    "event_type",
+    "observed_at",
+    "received_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "event_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]{0,199}$" },
+    "tenant_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]{0,199}$" },
+    "site_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]{0,199}$" },
+    "device_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:\\-]{0,199}$" },
+    "event_type": {
+      "enum": ["telemetry", "state", "event", "position", "command_result", "diagnostic"]
+    },
+    "observed_at": { "type": "string", "format": "date-time", "description": "Instante da medição" },
+    "received_at": { "type": "string", "format": "date-time", "description": "Instante da recepção pela infraestrutura" },
+    "processed_at": { "type": "string", "format": "date-time", "description": "Instante do processamento no EDGE" },
+    "measurements": {
+      "type": "object",
+      "description": "Nome com sufixo de unidade canônica (_m, _v, _a, _c, _pct, _bar, _kmh, _deg, _state...)",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+      "additionalProperties": { "type": ["number", "boolean", "null"] }
+    },
+    "quality": {
+      "type": "object",
+      "properties": {
+        "timestamp_source": { "enum": ["device", "network_server", "gateway", "edge", "core"] }
+      },
+      "additionalProperties": { "enum": ["valid", "suspect", "missing", "invalid"] }
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "protocol": { "type": "string" },
+        "adapter": { "type": "string" },
+        "adapter_version": { "type": "string" }
+      }
+    },
+    "location": {
+      "type": "object",
+      "required": ["lat", "lon"],
+      "properties": {
+        "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+        "lon": { "type": "number", "minimum": -180, "maximum": 180 },
+        "alt_m": { "type": "number" },
+        "speed_kmh": { "type": "number" },
+        "heading_deg": { "type": "number" },
+        "satellites": { "type": "integer" },
+        "hdop": { "type": "number" }
+      }
+    },
+    "attributes": { "type": "object" }
+  },
+  "examples": [
+    {
+      "schema_version": "1.0",
+      "event_id": "chirpstack:0102030405060708:event-001",
+      "tenant_id": "CLIENTE-001",
+      "site_id": "FAZENDA-001",
+      "device_id": "TN-NODE-0001",
+      "event_type": "telemetry",
+      "observed_at": "2026-11-22T12:00:00.000000+00:00",
+      "received_at": "2026-11-22T12:00:02.000000+00:00",
+      "measurements": { "water_level_m": 2.45, "battery_voltage_v": 12.7 },
+      "quality": { "water_level_m": "valid", "battery_voltage_v": "valid", "timestamp_source": "network_server" },
+      "source": { "protocol": "lorawan", "adapter": "lorawan_chirpstack" }
+    }
+  ]
+}
