@@ -26,8 +26,6 @@ from core.track_gateway.codec8 import CODEC_8E, encode_avl_packet
 from core.track_gateway.tcp_server import TeltonikaTcpServer
 from edge.adapters.lorawan.downlink import SimulatedNodeCBridge
 from edge.adapters.modbus.client import SimulatedPumpPLC
-from edge.commands.validator import CommandValidator
-from edge.monitoring.time_health import TimeHealthMonitor
 from edge.service import EdgeRuntime
 
 
@@ -388,3 +386,109 @@ def test_delta6_physical_loto_precedence_and_asset_regulatory_model(tmp_path):
     asset.validate()
     assert edge.devices.get("TN-PUMP-LOTO").asset_id == "ASSET-POCO-01"
     edge.close()
+
+
+def test_aud001_no_false_go_when_untested_and_in_transit_expiry(tmp_path):
+    """AUD-001 §6.1 e §7: relatório nunca retorna GO com itens NOT_TESTED; trânsito > TTL expira."""
+    store = CoreStore.open(f"sqlite:///{(tmp_path / 'core.db').as_posix()}")
+    store.create_tenant("C1", "Fazenda")
+    store.create_site("S1", "C1", "Sede")
+    _, op_key = store.create_user("op", "C1", role="operator")
+    app = create_app(store, master_key="k")
+    client = TestClient(app)
+    hdr = {"Authorization": f"Bearer {op_key}"}
+
+    # Sem testes de segurança executados -> critérios aparecem como NOT_TESTED e decisão = NOT_READY (jamais GO!)
+    rep = client.get("/api/v1/poc/report", headers=hdr).json()
+    assert rep["decision"] == "NOT_READY"
+    assert rep["criteria_status"]["EXPIRED_COMMANDS"] == "NOT_TESTED"
+    assert rep["criteria_status"]["UNAUTHORIZED_COMMANDS"] == "NOT_TESTED"
+    assert rep["criteria_status"]["INTERLOCKS"] == "NOT_TESTED"
+
+    # Registro formal de execução de teste via POST /api/v1/poc/executions
+    r_exec = client.post(
+        "/api/v1/poc/executions",
+        json={
+            "test_code": "POC-T09",
+            "category": "integration",
+            "status": "PASS",
+            "expected_result": "Comando não autorizado rejeitado",
+            "observed_result": "HTTP 403 + assinatura inválida rejeitada no EDGE",
+            "git_commit": "test-sha",
+            "environment": "bancada",
+        },
+        headers=hdr,
+    )
+    assert r_exec.status_code == 201
+    rep2 = client.get("/api/v1/poc/report", headers=hdr).json()
+    assert rep2["criteria_status"]["UNAUTHORIZED_COMMANDS"] == "PASS"
+    assert rep2["decision"] == "NOT_READY"  # ainda faltam outros critérios obrigatórios
+
+    # AUD-001 §6.1: comando com TTL 10s mas atraso de trânsito de 15s no rádio expira no NODE-C
+    edge_key = derive_edge_key("master", "EDGE-001")
+    edge = EdgeRuntime("EDGE-001", f"sqlite:///{(tmp_path / 'e.db').as_posix()}", edge_key)
+    edge.start_mqtt_subscriptions()
+    edge.devices.register(
+        Device.from_profile(
+            {
+                "device_id": "TN-NC-DELAY",
+                "tenant_id": "C1",
+                "site_id": "S1",
+                "category": "NODE-C",
+                "communication": {"type": "lorawan", "dev_eui": "bb00112233445566", "application_id": "app1"},
+                "adapter": {"name": "lorawan_node_c"},
+                "operational_status": "ACTIVE",
+                "metadata": {"allowed_operations": ["start_pump"]},
+            }
+        )
+    )
+    plc = SimulatedPumpPLC(pump_running=False)
+    SimulatedNodeCBridge(edge.bus, "app1", "bb00112233445566", plc, transit_delay_s=15.0)
+    now = datetime.now(UTC)
+    cmd = Command(
+        command_id="CMD-TRANSIT-EXP",
+        tenant_id="C1",
+        site_id="S1",
+        device_id="TN-NC-DELAY",
+        operation="start_pump",
+        requested_by="op",
+        issued_at=now.isoformat(),
+        expires_at=(now + timedelta(seconds=10)).isoformat(),
+        configuration_version=1,
+    )
+    cmd.signature = sign_command(cmd, edge_key)
+    edge.execute_command(cmd, now=now)
+    saved = edge.commands.get_command("CMD-TRANSIT-EXP")
+    assert saved is not None and saved["state"] == "EXPIRED"
+    assert plc.pump_running is False and plc.physical_actuations == 0
+    edge.close()
+
+
+def test_aud001_g1_r01_edge_deployment_consistency():
+    """AUD-001 §4, §5, §10: garante consistência entre Compose, Mosquitto ACL e ChirpStack."""
+    root = pathlib.Path("deployments/edge")
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    arm = (root / "docker-compose.arm.yml").read_text(encoding="utf-8")
+    mosq = (root / "mosquitto/mosquitto.conf").read_text(encoding="utf-8")
+    acl = (root / "mosquitto/acl.conf").read_text(encoding="utf-8")
+    cs = (root / "chirpstack/chirpstack.toml").read_text(encoding="utf-8")
+    au = (root / "chirpstack/region_au915_0.toml").read_text(encoding="utf-8")
+
+    # Zero senhas literais ou acesso anônimo
+    assert "allow_anonymous false" in mosq
+    assert "CHANGE_ME" not in cs
+    assert "REPLACE_WITH_" not in cs
+
+    # Mosquitto ACL e credenciais montadas e injetadas em todos os serviços
+    assert "acl.conf" in compose
+    assert "entrypoint.sh" in compose
+    assert "init-chirpstack-db.sh" in compose
+    assert "TERRANET_MQTT_USER" in compose
+    assert "TERRANET_MQTT_PASSWORD" in compose
+    assert "INTEGRATION__MQTT__AUTH__GENERIC__USERNAME" in compose
+    assert "username = \"chirpstack\"" in cs and "username = \"chirpstack\"" in au
+    assert "user gw_bridge" in acl and "user chirpstack" in acl and "user terranet_edge" in acl
+
+    # ARM configurado como override da stack completa (com limites em todos os serviços)
+    for svc in ("postgres:", "redis:", "mosquitto:", "chirpstack:", "terranet-edge:"):
+        assert svc in arm

@@ -167,3 +167,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_core_audit_tenant_at ON audit_log (tenant_id, at DESC);
+
+-- Evidências rastreáveis de execução de testes (AUD-001 §7, impede falsa aprovação GO/NO-GO)
+CREATE TABLE IF NOT EXISTS test_executions (
+    execution_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL REFERENCES tenants(tenant_id),
+    test_code TEXT NOT NULL,
+    category TEXT NOT NULL,
+    git_commit TEXT NOT NULL DEFAULT '',
+    environment TEXT NOT NULL DEFAULT '',
+    equipment TEXT NOT NULL DEFAULT '',
+    firmware_version TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    expected_result TEXT NOT NULL,
+    observed_result TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '{}',
+    approved_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_test_exec_tenant_code
+    ON test_executions (tenant_id, test_code, finished_at DESC);

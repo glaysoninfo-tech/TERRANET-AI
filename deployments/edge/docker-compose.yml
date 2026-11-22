@@ -1,5 +1,5 @@
-# TERRANET EDGE — Stack de referência (PIT-001 §5, §17.3, §18)
-# Antes de produzir em campo, substitua todas as credenciais via arquivo .env (nunca use padrões).
+# TERRANET EDGE — Stack de referência (PIT-001 §5, §17.3, §18, AUD-001 G1-R01)
+# Todas as credenciais são injetadas via .env (nunca use senhas padrão em campo).
 
 services:
   postgres:
@@ -11,11 +11,12 @@ services:
       POSTGRES_DB: ${EDGE_PG_DB:-terranet_edge}
     volumes:
       - edge_pg_data:/var/lib/postgresql/data
+      - ./postgres/init-chirpstack-db.sh:/docker-entrypoint-initdb.d/01-chirpstack.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${EDGE_PG_USER:-terranet_edge}"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U ${EDGE_PG_USER:-terranet_edge} -d ${EDGE_PG_DB:-terranet_edge}"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -23,15 +24,32 @@ services:
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
       - edge_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   mosquitto:
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/mosquitto/config/entrypoint.sh"]
+    environment:
+      EDGE_MQTT_PASSWORD: ${EDGE_MQTT_PASSWORD:?defina EDGE_MQTT_PASSWORD}
+      CHIRPSTACK_MQTT_PASSWORD: ${CHIRPSTACK_MQTT_PASSWORD:?defina CHIRPSTACK_MQTT_PASSWORD}
+      GW_BRIDGE_MQTT_PASSWORD: ${GW_BRIDGE_MQTT_PASSWORD:?defina GW_BRIDGE_MQTT_PASSWORD}
     ports:
       - "127.0.0.1:1883:1883"
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
+      - ./mosquitto/entrypoint.sh:/mosquitto/config/entrypoint.sh:ro
       - edge_mqtt_data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -u terranet_edge -P \"$EDGE_MQTT_PASSWORD\" -t terranet/v1/healthcheck -C 1 -W 1 >/dev/null 2>&1 || [ $$? -eq 27 ]"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   chirpstack:
     image: chirpstack/chirpstack:4
@@ -41,17 +59,18 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       mosquitto:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./chirpstack:/etc/chirpstack:ro
     environment:
-      POSTGRESQL_HOST: postgres
-      REDIS_HOST: redis
-      MQTT_BROKER_HOST: mosquitto
+      EDGE_PG_USER: ${EDGE_PG_USER:-terranet_edge}
+      EDGE_PG_PASSWORD: ${EDGE_PG_PASSWORD:?defina EDGE_PG_PASSWORD}
+      CHIRPSTACK_API_SECRET: ${CHIRPSTACK_API_SECRET:?defina CHIRPSTACK_API_SECRET}
+      CHIRPSTACK_MQTT_PASSWORD: ${CHIRPSTACK_MQTT_PASSWORD:?defina CHIRPSTACK_MQTT_PASSWORD}
 
   chirpstack-gateway-bridge:
     image: chirpstack/chirpstack-gateway-bridge:4
@@ -62,9 +81,12 @@ services:
       INTEGRATION__MQTT__EVENT_TOPIC_TEMPLATE: "au915_0/gateway/{{ .GatewayID }}/event/{{ .EventType }}"
       INTEGRATION__MQTT__STATE_TOPIC_TEMPLATE: "au915_0/gateway/{{ .GatewayID }}/state/{{ .StateType }}"
       INTEGRATION__MQTT__COMMAND_TOPIC_TEMPLATE: "au915_0/gateway/{{ .GatewayID }}/command/#"
-      INTEGRATION__MQTT__SERVER: "tcp://mosquitto:1883"
+      INTEGRATION__MQTT__AUTH__GENERIC__SERVERS: "tcp://mosquitto:1883"
+      INTEGRATION__MQTT__AUTH__GENERIC__USERNAME: "gw_bridge"
+      INTEGRATION__MQTT__AUTH__GENERIC__PASSWORD: "${GW_BRIDGE_MQTT_PASSWORD:?defina GW_BRIDGE_MQTT_PASSWORD}"
     depends_on:
-      - mosquitto
+      mosquitto:
+        condition: service_healthy
 
   terranet-edge:
     build:
@@ -75,15 +97,19 @@ services:
       postgres:
         condition: service_healthy
       mosquitto:
-        condition: service_started
+        condition: service_healthy
     environment:
       TERRANET_EDGE_ID: ${TERRANET_EDGE_ID:-EDGE-001}
       TERRANET_EDGE_DB_URL: postgresql://${EDGE_PG_USER:-terranet_edge}:${EDGE_PG_PASSWORD:?defina EDGE_PG_PASSWORD}@postgres:5432/${EDGE_PG_DB:-terranet_edge}
       TERRANET_MQTT_HOST: mosquitto
       TERRANET_MQTT_PORT: "1883"
+      TERRANET_MQTT_USER: terranet_edge
+      TERRANET_MQTT_PASSWORD: ${EDGE_MQTT_PASSWORD:?defina EDGE_MQTT_PASSWORD}
       TERRANET_CORE_URL: ${TERRANET_CORE_URL:-}
       TERRANET_EDGE_TOKEN: ${TERRANET_EDGE_TOKEN:-}
       TERRANET_MASTER_KEY: ${TERRANET_MASTER_KEY:?defina TERRANET_MASTER_KEY}
+      TERRANET_SYNC_INTERVAL_S: ${TERRANET_SYNC_INTERVAL_S:-5}
+      TERRANET_CONFIG_POLL_S: ${TERRANET_CONFIG_POLL_S:-60}
       TERRANET_EDGE_METRICS_PORT: "9101"
     ports:
       - "127.0.0.1:9101:9101"

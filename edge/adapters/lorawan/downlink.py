@@ -347,6 +347,7 @@ class SimulatedNodeCBridge:
         plc: ModbusClient,
         prefix: str = "",
         f_port: int = NODE_C_FPORT,
+        transit_delay_s: float = 0.0,
     ):
         self.bus = bus
         self.application_id = application_id
@@ -354,6 +355,7 @@ class SimulatedNodeCBridge:
         self.plc = plc
         self.prefix = prefix
         self.f_port = f_port
+        self.transit_delay_s = transit_delay_s
         self.downlinks_received = 0
         topic = chirpstack_downlink_topic(application_id, self.dev_eui, prefix=prefix)
         self.bus.subscribe(topic, self._on_downlink, qos=1)
@@ -368,12 +370,13 @@ class SimulatedNodeCBridge:
         coil = decoded["coil_address"]
         target = decoded["target_running"]
 
-        if decoded["ttl_remaining_s"] <= 0:
+        # AUD-001 §6.1: rejeita comando que expirou durante o trânsito pelo rádio
+        if decoded["ttl_remaining_s"] <= self.transit_delay_s:
             self._publish_ack(tag, STATUS_EXPIRED, 0)
             return
 
         try:
-            coils_pre = self.plc.read_coils(0, 5, unit_id=unit_id)
+            self.plc.read_coils(0, 5, unit_id=unit_id)
             accepted = self.plc.write_coil(coil, target, unit_id=unit_id)
             coils_post = self.plc.read_coils(0, 5, unit_id=unit_id)
         except ModbusTransportError:

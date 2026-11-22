@@ -1,55 +1,45 @@
-# TERRANET EDGE — Perfil ARM de Baixo Consumo (<= 5 W) para POC-001 (Gate 1 / §10.1)
+# TERRANET EDGE — Sobreposição (Override) ARM de Baixo Consumo (<= 5 W) (AUD-001 §10, ARQ-002 §8)
 #
-# Objetivo energético: manter Gateway LoRaWAN + EDGE ARM + Roteador LTE <= 15 W médios
-# para viabilizar autonomia >= 48 h com bateria LiFePO4 12,8 V / 100 Ah e painel 300 Wp.
+# Uso (sempre composto sobre docker-compose.yml para incluir a stack LoRaWAN completa):
+#   docker compose -f deployments/edge/docker-compose.yml -f deployments/edge/docker-compose.arm.yml up -d
 #
-# Diferenças frente ao compose padrão:
-# * TERRANET EDGE usa SQLite WAL em volume persistente (elimina 1 instância dedicada de PG)
-# * Limites de memória/CPU para evitar picos de consumo
-# * Suporte a adaptador RS-485 USB (/dev/ttyUSB0) para Modbus RTU direto ao CLP
+# Ajustes aplicados pelo perfil ARM:
+# * Limites de memória em TODOS os serviços (PostgreSQL/ChirpStack/Redis/Mosquitto/Bridge/EDGE)
+# * TERRANET EDGE usa SQLite WAL em volume persistente (reduz conexões/IO no PostgreSQL)
+# * Intervalo de sincronização ampliado para reduzir despertares do modem LTE
+# * Pronto para mapear adaptador USB-RS485 (/dev/ttyUSB0) para Modbus RTU
 
 services:
+  postgres:
+    mem_limit: 192m
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=30"]
+
+  redis:
+    mem_limit: 48m
+
   mosquitto:
-    image: eclipse-mosquitto:2
-    restart: unless-stopped
-    mem_limit: 64m
-    ports:
-      - "127.0.0.1:1883:1883"
-    volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/acl.conf:/mosquitto/config/acl.conf:ro
-      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
-      - edge_arm_mqtt:/mosquitto/data
+    mem_limit: 48m
+
+  chirpstack:
+    mem_limit: 160m
+
+  chirpstack-gateway-bridge:
+    mem_limit: 48m
 
   terranet-edge:
-    build:
-      context: ../..
-      dockerfile: deployments/edge/Dockerfile
-    restart: unless-stopped
-    mem_limit: 192m
-    depends_on:
-      - mosquitto
+    mem_limit: 160m
     environment:
-      TERRANET_EDGE_ID: ${TERRANET_EDGE_ID:-EDGE-001}
       TERRANET_EDGE_DB_URL: sqlite:////data/edge.db
-      TERRANET_MQTT_HOST: mosquitto
-      TERRANET_MQTT_PORT: "1883"
-      TERRANET_MQTT_USER: terranet_edge
-      TERRANET_MQTT_PASSWORD: ${EDGE_MQTT_PASSWORD:?defina EDGE_MQTT_PASSWORD}
-      TERRANET_CORE_URL: ${TERRANET_CORE_URL:-}
-      TERRANET_EDGE_TOKEN: ${TERRANET_EDGE_TOKEN:-}
-      TERRANET_MASTER_KEY: ${TERRANET_MASTER_KEY:?defina TERRANET_MASTER_KEY}
-      TERRANET_SYNC_INTERVAL_S: "10"
-      TERRANET_CONFIG_POLL_S: "60"
-      TERRANET_EDGE_METRICS_PORT: "9101"
+      TERRANET_SYNC_INTERVAL_S: "15"
+      TERRANET_CONFIG_POLL_S: "120"
     volumes:
       - edge_arm_data:/data
     # Descomente quando o conversor USB-RS485 estiver conectado ao EDGE ARM:
     # devices:
     #   - /dev/ttyUSB0:/dev/ttyUSB0
-    ports:
-      - "127.0.0.1:9101:9101"
+
+  prometheus:
+    mem_limit: 128m
 
 volumes:
-  edge_arm_mqtt:
   edge_arm_data:

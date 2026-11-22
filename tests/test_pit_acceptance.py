@@ -12,7 +12,6 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from contracts.commands import Command, CommandState, derive_edge_key, sign_command
-from contracts.devices import Device
 from contracts.rules import Rule
 from core.api.app import create_app
 from core.storage.repository import CoreStore

@@ -22,7 +22,7 @@ from typing import Any
 
 from common.device_store import DeviceStore
 from common.metrics import Registry
-from common.timeutil import now_iso, utc_now
+from common.timeutil import now_iso
 from contracts.canonical import CanonicalEvent, EventType
 from contracts.commands import Command, CommandState
 from contracts.devices import TELEMETRY_ACCEPTING, Device
@@ -36,7 +36,7 @@ from edge.commands.validator import CommandValidator
 from edge.monitoring.agent import MonitoringAgent
 from edge.monitoring.time_health import TimeHealthMonitor
 from edge.mqtt.bus import InMemoryBus, MessageBus
-from edge.rules.engine import RuleStore, RulesEngine
+from edge.rules.engine import RulesEngine, RuleStore
 from edge.storage.repository import EdgeStore
 from edge.synchronization.agent import SyncAgent, SyncResult
 from edge.synchronization.client import SyncTransport
@@ -268,8 +268,8 @@ class EdgeRuntime:
         if self.store.db.dialect == "sqlite":
             try:
                 self.store.db.execute("PRAGMA wal_checkpoint(FULL)")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Falha no checkpoint WAL durante desligamento: %s", exc)
         self.close()
         return {
             "edge_id": self.edge_id,

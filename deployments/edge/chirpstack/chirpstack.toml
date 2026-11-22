@@ -1,9 +1,11 @@
-# Configuração base do ChirpStack v4 para o Brasil — região AU915 sub-banda 0 (§17.3)
+# Configuração do ChirpStack v4 para o Brasil — região AU915 sub-banda 0 (AUD-001 G1-R01)
+# Variáveis $EDGE_PG_USER, $EDGE_PG_PASSWORD, $CHIRPSTACK_API_SECRET e $CHIRPSTACK_MQTT_PASSWORD
+# são expandidas nativamente pelo ChirpStack v4 a partir do ambiente do contêiner.
 [logging]
   level = "info"
 
 [postgresql]
-  dsn = "postgres://terranet_edge:CHANGE_ME@postgres/chirpstack?sslmode=disable"
+  dsn = "postgres://$EDGE_PG_USER:$EDGE_PG_PASSWORD@postgres/chirpstack?sslmode=disable"
 
 [redis]
   servers = ["redis://redis/"]
@@ -14,13 +16,15 @@
 
 [api]
   bind = "0.0.0.0:8080"
-  secret = "REPLACE_WITH_32_BYTE_RANDOM_SECRET"
+  secret = "$CHIRPSTACK_API_SECRET"
 
 [integration]
   enabled = ["mqtt"]
 
   [integration.mqtt]
     server = "tcp://mosquitto:1883/"
+    username = "chirpstack"
+    password = "$CHIRPSTACK_MQTT_PASSWORD"
     json = true
     event_topic = "application/{{application_id}}/device/{{dev_eui}}/event/{{event}}"
     command_topic = "application/{{application_id}}/device/{{dev_eui}}/command/{{command}}"

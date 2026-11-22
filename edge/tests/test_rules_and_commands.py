@@ -9,7 +9,7 @@ from contracts.devices import Device
 from contracts.rules import Rule
 from edge.adapters.modbus.client import SimulatedPumpPLC
 from edge.commands.validator import CommandValidator
-from edge.rules.engine import RuleStore, RulesEngine
+from edge.rules.engine import RulesEngine, RuleStore
 from edge.storage.repository import EdgeStore
 
 

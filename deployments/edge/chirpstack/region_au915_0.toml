@@ -1,4 +1,4 @@
-# Região AU915 (Brasil — ANATEL), canais 0-7 + 64
+# Região AU915 (Brasil — ANATEL), canais 0-7 + 64 (AUD-001 G1-R01)
 [regions]
   id = "au915_0"
   description = "AU915 (Brasil, canais 0-7)"
@@ -13,6 +13,8 @@
       [regions.gateway.backend.mqtt]
         topic_prefix = "au915_0"
         server = "tcp://mosquitto:1883"
+        username = "chirpstack"
+        password = "$CHIRPSTACK_MQTT_PASSWORD"
 
   [regions.network]
     installation_margin = 10

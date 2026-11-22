@@ -88,6 +88,22 @@ class EnergyGateRequest(BaseModel):
     recovery_days: float = 3.0
 
 
+class TestExecutionRequest(BaseModel):
+    test_code: str
+    category: str = "integration"
+    status: str
+    expected_result: str
+    observed_result: str
+    git_commit: str = ""
+    environment: str = ""
+    equipment: str = ""
+    firmware_version: str = ""
+    started_at: str | None = None
+    finished_at: str | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    approved_by: str = ""
+
+
 def create_app(
     store: CoreStore,
     master_key: bytes | str,
@@ -508,6 +524,39 @@ def create_app(
             return evaluate_energy_gate(EnergyGate(**body.model_dump()))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/poc/executions", status_code=201)
+    def record_poc_execution(
+        body: TestExecutionRequest,
+        user: UserPrincipal = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            user.require_role("operator")
+            rec = store.record_test_execution(
+                tenant_id=user.tenant_id,
+                approved_by=body.approved_by or user.username,
+                **body.model_dump(exclude={"approved_by"}),
+            )
+            store.audit(
+                user.tenant_id,
+                user.username,
+                "poc:test_execution",
+                body.test_code,
+                body.status,
+                {"category": body.category, "execution_id": rec["execution_id"]},
+            )
+            return rec
+        except ForbiddenError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/poc/executions")
+    def list_poc_executions(
+        test_code: str | None = None,
+        user: UserPrincipal = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        return store.list_test_executions(user.tenant_id, test_code=test_code)
 
     # --------------------------------------------------------- IHC Web (UI)
     web_dir = Path(__file__).resolve().parent.parent / "web"

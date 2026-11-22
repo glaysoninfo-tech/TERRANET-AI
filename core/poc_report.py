@@ -133,6 +133,24 @@ def decide_go_nogo(results: dict[str, bool]) -> str:
     return "CONDITIONAL GO"
 
 
+def decide_go_nogo_tristate(criteria_status: dict[str, str]) -> str:
+    """Decisão auditável (AUD-001 §7): impede falsa aprovação quando há itens NOT_TESTED."""
+    safety_and_integrity = (
+        "SYNC",
+        "EXPIRED_COMMANDS",
+        "UNAUTHORIZED_COMMANDS",
+        "INTERLOCKS",
+        "INTEROPERABILITY",
+    )
+    if any(criteria_status.get(k) == "FAIL" for k in safety_and_integrity):
+        return "NO-GO"
+    if any(v == "NOT_TESTED" for v in criteria_status.values()):
+        return "NOT_READY"
+    if all(v == "PASS" for v in criteria_status.values()):
+        return "GO"
+    return "CONDITIONAL GO"
+
+
 def reuse_ratio(reused_integrations: int, total_integrations: int) -> float:
     """Indicador de reutilização R = (Ir / It) * 100 (§26.1)."""
     if total_integrations <= 0:
@@ -202,16 +220,49 @@ def build_poc_report_from_store(
             }
         )
 
-    # Contagens de comandos e segurança
+    # Contagens de comandos e auditoria real de violações (AUD-001 §7 — sem zeros hardcoded!)
     commands = store.list_commands(tenant_id=tenant_id, limit=1000)
     expired_rejected = sum(1 for c in commands if c["state"] == "EXPIRED")
-    verified_commands = sum(1 for c in commands if c["state"] == "VERIFIED")
-    rejected_commands = sum(1 for c in commands if c["state"] == "REJECTED")
+    verified_commands = sum(
+        1 for c in commands if c["state"] in ("VERIFIED", "PHYSICAL_STATE_VERIFIED")
+    )
+    rejected_commands = sum(
+        1 for c in commands if c["state"] in ("REJECTED", "PLC_REJECTED")
+    )
+    interlock_blocked = sum(
+        1
+        for c in commands
+        if c["state"] in ("REJECTED", "PLC_REJECTED") and "interlock" in (c.get("reason") or "")
+    )
+    audit_rejected = int(
+        store.db.scalar(
+            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? AND outcome = 'rejected'",
+            (tenant_id,),
+        )
+        or 0
+    )
 
-    # Verifica se houve qualquer violação (comando expirado ou rejeitado por intertravamento executado)
-    expired_executed = 0
-    unauthorized_executed = 0
-    interlock_violations = 0
+    # Evidências registradas formalmente na tabela test_executions
+    executions = store.list_test_executions(tenant_id=tenant_id, limit=500)
+    latest_by_code: dict[str, dict[str, Any]] = {}
+    for ex in executions:
+        latest_by_code.setdefault(ex["test_code"], ex)
+
+    # Detecta violações reais: comando expirado que chegou a EXECUTED/VERIFIED
+    from common.timeutil import parse_ts
+
+    expired_executed = sum(
+        1
+        for c in commands
+        if c["state"] in ("EXECUTED", "PLC_EXECUTED", "VERIFIED", "PHYSICAL_STATE_VERIFIED")
+        and parse_ts(c["updated_at"]) > parse_ts(c["expires_at"])
+    )
+    unauthorized_executed = sum(
+        1 for ex in executions if ex["test_code"] in ("POC-T09", "PIT-T10") and ex["status"] == "FAIL"
+    )
+    interlock_violations = sum(
+        1 for ex in executions if ex["test_code"] in ("POC-T10", "PIT-T12") and ex["status"] == "FAIL"
+    )
 
     # Posições e registros atrasados de TRACK (POC-T11 / POC-T12)
     track_events = store.query_events(tenant_id=tenant_id, event_type="position", limit=1000)
@@ -226,7 +277,7 @@ def build_poc_report_from_store(
     apps = 0
     if any(n["received_messages"] > 0 for n in node_details):
         apps += 1  # H01
-    if pump_devices and (verified_commands > 0 or rejected_commands > 0 or store.query_events(tenant_id, event_type="telemetry", limit=50)):
+    if pump_devices and (verified_commands > 0 or rejected_commands > 0):
         apps += 1  # P01
     if track_devices and len(track_events) > 0:
         apps += 1  # V01
@@ -234,41 +285,65 @@ def build_poc_report_from_store(
     core_total = store.count_events(tenant_id)
     persisted = core_total if persisted_edge_events is None else persisted_edge_events
 
-    system = SystemTest(
-        offline_hours=offline_hours,
-        gateway_autonomy_hours=gateway_autonomy_hours,
-        node_autonomy_hours=node_autonomy_hours,
-        persisted_events=persisted,
-        synchronized_events=core_total,
-        expired_commands_executed=expired_executed,
-        unauthorized_commands_executed=unauthorized_executed,
-        applications_validated=apps,
-        independent_node_profiles=len(manufacturers),
-        interlock_violations=interlock_violations,
+    # Avaliação tri-estado (PASS / FAIL / NOT_TESTED) — impede falsa aprovação!
+    criteria_status: dict[str, str] = {}
+    for nd in node_details:
+        if nd["received_messages"] == 0:
+            criteria_status[f"PDR_{nd['device_id']}"] = "NOT_TESTED"
+        else:
+            criteria_status[f"PDR_{nd['device_id']}"] = "PASS" if nd["approved"] else "FAIL"
+
+    def _field_metric(value: float, threshold: float, test_code: str) -> str:
+        ex = latest_by_code.get(test_code)
+        if ex is not None:
+            return ex["status"]
+        if value <= 0:
+            return "NOT_TESTED"
+        return "PASS" if value >= threshold else "FAIL"
+
+    criteria_status["EDGE_OFFLINE"] = _field_metric(offline_hours, 24.0, "POC-T05")
+    criteria_status["GATEWAY_ENERGY"] = _field_metric(gateway_autonomy_hours, 48.0, "POC-T13-GW")
+    criteria_status["NODE_ENERGY"] = _field_metric(node_autonomy_hours, 72.0, "POC-T13-NODE")
+    criteria_status["SYNC"] = (
+        "NOT_TESTED"
+        if persisted == 0 and core_total == 0
+        else ("PASS" if persisted > 0 and core_total == persisted else "FAIL")
     )
-    criteria = evaluate_poc(node_tests, system)
-    decision = decide_go_nogo(criteria)
+    criteria_status["EXPIRED_COMMANDS"] = (
+        "FAIL"
+        if expired_executed > 0
+        else ("PASS" if expired_rejected > 0 or (latest_by_code.get("PIT-T11") or {}).get("status") == "PASS" else "NOT_TESTED")
+    )
+    criteria_status["UNAUTHORIZED_COMMANDS"] = (
+        "FAIL"
+        if unauthorized_executed > 0
+        else ("PASS" if audit_rejected > 0 or (latest_by_code.get("POC-T09") or {}).get("status") == "PASS" else "NOT_TESTED")
+    )
+    criteria_status["INTERLOCKS"] = (
+        "FAIL"
+        if interlock_violations > 0
+        else ("PASS" if interlock_blocked > 0 or (latest_by_code.get("POC-T10") or {}).get("status") == "PASS" else "NOT_TESTED")
+    )
+    criteria_status["APPLICATIONS"] = "PASS" if apps >= 3 else ("NOT_TESTED" if apps == 0 else "FAIL")
+    criteria_status["INTEROPERABILITY"] = (
+        "PASS"
+        if len(manufacturers) >= 2
+        else ("NOT_TESTED" if len(manufacturers) == 0 else "FAIL")
+    )
+
+    decision = decide_go_nogo_tristate(criteria_status)
+    # Compatibilidade booleana (somente True quando efetivamente PASS)
+    criteria = {k: (v == "PASS") for k, v in criteria_status.items()}
 
     # Indicador de reutilização R (§26.1): dispositivos que compartilham adaptadores já existentes
     adapters_used = [d.adapter_id for d in devices]
     reused = max(0, len(adapters_used) - len(set(adapters_used)))
 
-    # Evidência de testes negativos deliberados de segurança (ARQ-002 §13.4)
-    interlock_blocked = sum(
-        1 for c in commands if c["state"] in ("REJECTED", "PLC_REJECTED") and "interlock" in (c.get("reason") or "")
-    )
-    audit_rejected = int(
-        store.db.scalar(
-            "SELECT COUNT(*) FROM audit_log WHERE tenant_id = ? AND outcome = 'rejected'",
-            (tenant_id,),
-        )
-        or 0
-    )
-
     return {
         "tenant_id": tenant_id,
         "decision": decision,
         "criteria": criteria,
+        "criteria_status": criteria_status,
         "nodes": node_details,
         "summary": {
             "total_devices": len(devices),
@@ -279,10 +354,12 @@ def build_poc_report_from_store(
             "commands_verified": verified_commands,
             "commands_rejected": rejected_commands,
             "commands_expired_blocked": expired_rejected,
+            "expired_commands_executed": expired_executed,
             "track_positions": len(track_events),
             "track_delayed_offline_recovered": delayed_track,
             "track_can_j1939_events": can_events,
             "reuse_ratio_pct": reuse_ratio(reused, len(adapters_used)),
+            "recorded_test_executions": len(executions),
         },
         "negative_security_tests": {
             "expired_blocked_evidence": expired_rejected,

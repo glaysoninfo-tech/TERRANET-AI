@@ -15,7 +15,6 @@ import socket
 import socketserver
 import struct
 import threading
-from typing import Any
 
 from core.storage.repository import CoreStore
 from core.telemetry.service import TelemetryIngestionService

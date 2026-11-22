@@ -481,3 +481,72 @@ class CoreStore:
         for row in rows:
             row["details"] = loads(row["details"]) or {}
         return rows
+
+    # ------------------------------------------------- evidências de testes
+    def record_test_execution(
+        self,
+        tenant_id: str,
+        test_code: str,
+        category: str,
+        status: str,
+        expected_result: str,
+        observed_result: str,
+        *,
+        git_commit: str = "",
+        environment: str = "",
+        equipment: str = "",
+        firmware_version: str = "",
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        approved_by: str = "",
+    ) -> dict[str, Any]:
+        if category not in ("unit", "integration", "hil", "field"):
+            raise ValueError(f"Categoria de teste inválida: {category}")
+        if status not in ("PASS", "FAIL", "NOT_TESTED"):
+            raise ValueError(f"Status de teste inválido: {status}")
+        now = now_iso()
+        exec_id = f"TEX-{uuid.uuid4().hex[:12]}"
+        self.db.execute(
+            "INSERT INTO test_executions (execution_id, tenant_id, test_code, category, "
+            "git_commit, environment, equipment, firmware_version, started_at, finished_at, "
+            "expected_result, observed_result, status, evidence, approved_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                exec_id,
+                tenant_id,
+                test_code,
+                category,
+                git_commit,
+                environment,
+                equipment,
+                firmware_version,
+                started_at or now,
+                finished_at or now,
+                expected_result,
+                observed_result,
+                status,
+                dumps(evidence or {}),
+                approved_by,
+            ),
+        )
+        row = self.db.query_one(
+            "SELECT * FROM test_executions WHERE execution_id = ?", (exec_id,)
+        ) or {}
+        row["evidence"] = loads(row.get("evidence")) or {}
+        return row
+
+    def list_test_executions(
+        self, tenant_id: str, test_code: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM test_executions WHERE tenant_id = ?"
+        params: list[Any] = [tenant_id]
+        if test_code:
+            sql += " AND test_code = ?"
+            params.append(test_code)
+        sql += " ORDER BY finished_at DESC LIMIT ?"
+        params.append(int(limit))
+        rows = self.db.query(sql, params)
+        for row in rows:
+            row["evidence"] = loads(row.get("evidence")) or {}
+        return rows

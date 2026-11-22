@@ -8,12 +8,15 @@ from contracts.canonical import CanonicalEvent, ContractError, validate_event
 from contracts.commands import (
     Command,
     CommandState,
-    can_transition as cmd_can_transition,
     derive_edge_key,
     sign_command,
     verify_command,
 )
-from contracts.devices import Device, LifecycleState, can_transition as dev_can_transition
+from contracts.commands import (
+    can_transition as cmd_can_transition,
+)
+from contracts.devices import Device, LifecycleState
+from contracts.devices import can_transition as dev_can_transition
 from contracts.rules import Rule, RuleValidationError
 from contracts.topics import (
     DELIVERY_POLICY,

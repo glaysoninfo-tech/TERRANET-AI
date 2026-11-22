@@ -19,7 +19,7 @@ from typing import Any
 from common.db import dumps, loads
 from common.device_store import DeviceStore
 from common.timeutil import now_iso, utc_now
-from contracts.canonical import CanonicalEvent, EventType, Quality, TimestampSource
+from contracts.canonical import CanonicalEvent, EventType, TimestampSource
 from contracts.commands import Command, CommandState, verify_command, verify_command_keyring
 from contracts.devices import COMMAND_ACCEPTING
 from edge.adapters.lorawan.downlink import (
